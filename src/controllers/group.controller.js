@@ -1,5 +1,4 @@
-import { User } from "../models/user.model";
-import { Group } from "../models/group.model.js";
+import Group from "../models/group.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";

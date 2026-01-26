@@ -1,7 +1,5 @@
-import express from "express";
-import { Message } from "../models/message.model.js";
-import { Group } from "../models/group.model.js";
-import { User } from "../models/user.model.js";
+import Message from "../models/message.model.js";
+import Group from "../models/group.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
@@ -19,16 +17,16 @@ export const sendMessage = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Group not found");
   }
 
-  const isMemeber = group.members.some((memberId) => {
-    userId.toString() === memberId.toString();
-  });
+  const isMember = group.members.some(
+    (memberId) => userId.toString() === memberId.toString()
+  );
 
-  if (!isMemeber) {
+  if (!isMember) {
     throw new ApiError(403, "You are not a member of this group");
   }
 
   const message = await Message.create({
-    group: group,
+    group: groupId,
     content: content.trim(),
     sender: userId,
   });

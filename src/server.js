@@ -1,26 +1,12 @@
-import express from "express";
 import dotenv from "dotenv";
+import app from "./app.js";
 import connectDB from "./config/db.js";
-import authRoutes from "./routes/auth.routes.js";
-import groupRoutes from "./routes/group.routes.js";
 
-// env files
+// Load env files
 dotenv.config();
 
-// create app
-const app = express();
+// Connect to database
 connectDB();
-
-app.use(express.json());
-
-// Routes
-app.use("/api/auth", authRoutes);
-app.use("/groups", groupRoutes);
-
-// health endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "OK", message: "Server is running" });
-});
 
 const PORT = process.env.PORT || 5000;
 
