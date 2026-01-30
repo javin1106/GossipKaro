@@ -83,7 +83,7 @@ export const getMessages = asyncHandler(async (req, res) => {
 });
 
 export const getGroupDetails = asyncHandler(async (req, res) => {
-  const groupId = req.params;
+  const { groupId } = req.params;
   const userId = req.user._id;
   if (!groupId) throw new ApiError(400, "Group ID is required");
 
@@ -110,6 +110,70 @@ export const getGroupDetails = asyncHandler(async (req, res) => {
       "Group details fetched successfully",
     ),
   );
+});
+
+export const leaveGroup = asyncHandler(async (req, res) => {
+  const { groupId } = req.params;
+  const userId = req.user._id;
+
+  if (!groupId) {
+    throw new ApiError(400, "Group ID is required");
+  }
+
+  const group = await Group.findById(groupId);
+
+  if (!group) {
+    throw new ApiError(404, "Group not found");
+  }
+
+  const isMember = group.members.some(
+    (memberId) => memberId.toString() === userId.toString(),
+  );
+
+  if (!isMember) {
+    throw new ApiError(400, "You are not a member of this group");
+  }
+
+  const isAdmin = group.admins.some(
+    (adminId) => adminId.toString() === userId.toString(),
+  );
+
+  // If user is the only admin, promote a random member before leaving
+  if (isAdmin && group.admins.length === 1) {
+    // Find other members who can become admin
+    const otherMembers = group.members.filter(
+      (memberId) => memberId.toString() !== userId.toString(),
+    );
+
+    if (otherMembers.length === 0) {
+      // Last member in group, can delete the group or just leave
+      await Group.findByIdAndDelete(groupId);
+      return res
+        .status(200)
+        .json(new ApiResponse(200, null, "Group deleted as you were the last member"));
+    }
+
+    // Promote random member to admin
+    const randomIndex = Math.floor(Math.random() * otherMembers.length);
+    const newAdmin = otherMembers[randomIndex];
+    group.admins.push(newAdmin);
+  }
+
+  // Remove user from members
+  group.members = group.members.filter(
+    (memberId) => memberId.toString() !== userId.toString(),
+  );
+
+  // If user was admin, remove from admins
+  group.admins = group.admins.filter(
+    (adminId) => adminId.toString() !== userId.toString(),
+  );
+
+  await group.save();
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, null, "Left group successfully"));
 });
 
 export const getUserGroups = asyncHandler(async (req, res) => {

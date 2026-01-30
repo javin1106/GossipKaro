@@ -12,7 +12,7 @@ const setupSocket = (io) => {
       if (!token) return next(new Error("Unauthorized"));
 
       const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-      const user = await User.findById(decoded.id).select("_id username");
+      const user = await User.findById(decoded.id).select("_id username email");
 
       if (!user) return next(new Error("User not found"));
 
@@ -79,16 +79,30 @@ const setupSocket = (io) => {
           messageType: "text",
         });
 
+        // Populate sender info before broadcasting
+        await message.populate("sender", "username email");
+
         io.to(groupId).emit("new-message", message);
       } catch (err) {
         socket.emit("error", { message: "Failed to send message" });
       }
     });
 
+    socket.on("typing", ({ groupId }) => {
+      socket.to(groupId).emit("user-typing", {
+        username: socket.user.username || socket.user.email,
+        userId: socket.user._id,
+      });
+    });
 
+    socket.on("stop-typing", ({ groupId }) => {
+      socket.to(groupId).emit("user-stopped-typing", {
+        userId: socket.user._id,
+      });
+    });
 
     socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.user.username);
+      console.log("User disconnected:", socket.user.username || socket.user.email);
     });
   });
 };
