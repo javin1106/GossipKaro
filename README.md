@@ -1,183 +1,265 @@
-# 💬 GossipKaro
+# GossipKaro
 
-An end-to-end real-time chat application built with Node.js, Express, Socket.IO, and MongoDB. GossipKaro enables users to create groups, invite members, and exchange messages in real-time with features like typing indicators and user authentication.
+GossipKaro is a real-time group chat app with a React frontend, an Express backend, Socket.IO live messaging, JWT authentication, and MongoDB persistence.
 
-## ✨ Features
+The app is currently structured as two separate projects:
 
-- 🔐 **User Authentication**: Secure JWT-based authentication with bcrypt password hashing
-- 👥 **Group Chat**: Create and manage chat groups
-- 📨 **Real-time Messaging**: Instant message delivery using Socket.IO
-- 💬 **Typing Indicators**: See when other users are typing
-- 🎫 **Invite System**: Send and manage group invitations
-- 🔒 **Secure**: Authentication middleware for protected routes and socket connections
-- 🌐 **CORS Enabled**: Ready for frontend integration
+- `backend/` - Express API, MongoDB models, JWT auth, Socket.IO server
+- `frontend/` - Vite + React chat UI
 
-## 🛠️ Tech Stack
+It is not deployed yet. Run it locally with the commands below.
 
-- **Backend**: Node.js, Express 5.x
-- **Database**: MongoDB with Mongoose ODM
-- **Real-time**: Socket.IO 4.x
-- **Authentication**: JWT (jsonwebtoken) & bcryptjs
-- **Environment Variables**: dotenv
+## Features
 
-## 📁 Project Structure
+- Register and login with JWT auth
+- Create chat groups
+- Join groups using invite codes or invite links
+- View your groups and active group details
+- View all members in a group
+- Send and receive messages in real time with Socket.IO
+- Typing indicators
+- Leave groups
+- Automatic group member refresh when users join or leave
 
-```
+## Tech Stack
+
+### Frontend
+
+- React 18
+- Vite
+- Socket.IO Client
+- Lucide React icons
+
+### Backend
+
+- Node.js
+- Express 5
+- Socket.IO
+- MongoDB + Mongoose
+- JWT
+- bcryptjs
+- cookie-parser
+- cors
+
+## Project Structure
+
+```text
 GossipKaro/
-├── src/
-│   ├── app.js              # Express app configuration
-│   ├── server.js           # Server entry point
-│   ├── socket.js           # Socket.IO setup and event handlers
-│   ├── config/             # Configuration files (database, etc.)
-│   ├── controllers/        # Request handlers
-│   ├── middleware/         # Custom middleware (auth, etc.)
-│   ├── models/             # Mongoose models (User, Group, Message)
-│   ├── routes/             # API routes
-│   │   ├── auth.routes.js
-│   │   ├── group.routes.js
-│   │   ├── invite.routes.js
-│   │   └── message.routes.js
-│   ├── scripts/            # Utility scripts
-│   ├── public/             # Static files
-│   └── utils/              # Helper functions
+├── backend/
+│   ├── src/
+│   │   ├── app.js
+│   │   ├── server.js
+│   │   ├── socket.js
+│   │   ├── config/
+│   │   ├── controllers/
+│   │   ├── middleware/
+│   │   ├── models/
+│   │   ├── routes/
+│   │   ├── scripts/
+│   │   └── utils/
+│   ├── package.json
+│   └── package-lock.json
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── main.jsx
+│   │   ├── styles.css
+│   │   └── lib/
+│   ├── index.html
+│   ├── vite.config.js
+│   ├── package.json
+│   └── package-lock.json
+├── scripts/
+│   └── dev.js
+├── .env
 ├── package.json
-└── .gitignore
+└── README.md
 ```
 
-## 🚀 Getting Started
+## Local Setup
 
-### Prerequisites
+### 1. Install Dependencies
 
-- Node.js (v16 or higher)
-- MongoDB (local or cloud instance)
-- npm or yarn
+From the project root:
 
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/javin1106/GossipKaro.git
-   cd GossipKaro
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Set up environment variables**
-   
-   Create a `.env` file in the root directory:
-   ```env
-   PORT=5000
-   MONGODB_URI=your_mongodb_connection_string
-   ACCESS_TOKEN_SECRET=your_jwt_secret_key
-   ```
-
-4. **Start the development server**
-   ```bash
-   npm run dev
-   ```
-
-   The server will start on `http://localhost:5000` (or your specified PORT)
-
-## 📡 API Endpoints
-
-### Authentication
-- `POST /api/auth/register` - Register a new user
-- `POST /api/auth/login` - Login user
-
-### Groups
-- `GET /api/groups` - Get all groups for authenticated user
-- `POST /api/groups` - Create a new group
-- `GET /api/groups/:id` - Get group details
-- `PUT /api/groups/:id` - Update group
-- `DELETE /api/groups/:id` - Delete group
-
-### Invites
-- `POST /api/invites` - Send group invitation
-- `GET /api/invites` - Get pending invites
-- `PUT /api/invites/:id/accept` - Accept invitation
-- `PUT /api/invites/:id/reject` - Reject invitation
-
-### Messages
-- `GET /api/messages/:groupId` - Get group messages
-
-### Health Check
-- `GET /health` - Server health status
-
-## 🔌 Socket.IO Events
-
-### Client → Server
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `join-group` | `groupId` | Join a specific group room |
-| `send-message` | `{ groupId, content }` | Send a message to a group |
-| `typing` | `{ groupId }` | Notify that user is typing |
-| `stop-typing` | `{ groupId }` | Notify that user stopped typing |
-
-### Server → Client
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `new-message` | `message` | New message received in group |
-| `user-typing` | `{ username, userId }` | User started typing |
-| `user-stopped-typing` | `{ userId }` | User stopped typing |
-| `error` | `{ message }` | Error notification |
-
-### Socket Authentication
-
-Socket connections require JWT authentication via handshake:
-
-```javascript
-const socket = io('http://localhost:5000', {
-  auth: {
-    token: 'your_jwt_token'
-  }
-});
+```powershell
+npm --prefix backend install
+npm --prefix frontend install
 ```
 
-## 🔑 Authentication Flow
+### 2. Configure Environment Variables
 
-1. **Register/Login**: User receives JWT token
-2. **Protected Routes**: Include token in `Authorization` header as `Bearer <token>`
-3. **Socket Connection**: Pass token in socket handshake auth
-4. **Real-time Operations**: All socket events are authenticated
+Create or update `.env` in the project root:
 
-## 🧪 Development
+```env
+PORT=5000
+MONGO_URI=mongodb+srv://USERNAME:PASSWORD@HOST/gossipkaro?retryWrites=true&w=majority
 
-```bash
-# Run in development mode with auto-reload
+ACCESS_TOKEN_SECRET=your_access_token_secret
+ACCESS_TOKEN_EXPIRY=1d
+REFRESH_TOKEN_SECRET=your_refresh_token_secret
+REFRESH_TOKEN_EXPIRY=10d
+
+CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
+```
+
+Important MongoDB note: include the database name in the URI, for example `/gossipkaro`. If you omit it, MongoDB may use the default `test` database.
+
+### 3. Run the App
+
+From the project root:
+
+```powershell
 npm run dev
 ```
 
-## 📦 Dependencies
+This starts both servers:
 
-- **express**: Web framework
-- **mongoose**: MongoDB object modeling
-- **socket.io**: Real-time bidirectional communication
-- **jsonwebtoken**: JWT authentication
-- **bcryptjs**: Password hashing
-- **dotenv**: Environment variable management
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:5000`
 
-## 👨‍💻 Author
+You can also run them separately:
 
-**Javin Chutani**
-- GitHub: [@javin1106](https://github.com/javin1106)
+```powershell
+npm run dev:backend
+npm run dev:frontend
+```
 
-## 📄 License
+## Available Scripts
+
+Root scripts:
+
+```text
+npm run dev           Start backend and frontend together
+npm run dev:backend   Start only the backend
+npm run dev:frontend  Start only the frontend
+npm run build         Build the frontend
+npm run start         Start the backend in production mode
+```
+
+Backend scripts:
+
+```text
+npm --prefix backend run dev
+npm --prefix backend start
+```
+
+Frontend scripts:
+
+```text
+npm --prefix frontend run dev
+npm --prefix frontend run build
+npm --prefix frontend run preview
+```
+
+## API Endpoints
+
+### Auth
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/refresh
+GET  /api/auth/me
+POST /api/auth/logout
+```
+
+### Groups
+
+```text
+POST /api/groups/create
+GET  /api/groups
+GET  /api/groups/:groupId
+GET  /api/groups/:groupId/messages
+POST /api/groups/:groupId/leave
+```
+
+### Invites
+
+```text
+POST /api/invites/create
+POST /api/invites/join/:code
+```
+
+### Messages
+
+```text
+POST /api/messages/send
+```
+
+### Health
+
+```text
+GET /health
+```
+
+## Socket.IO Events
+
+Socket connections require a JWT token:
+
+```js
+const socket = io("http://localhost:5000", {
+  auth: { token },
+});
+```
+
+### Client to Server
+
+| Event | Payload | Description |
+| --- | --- | --- |
+| `join-group` | `groupId` | Join a group room |
+| `send-message` | `{ groupId, content }` | Send a group message |
+| `typing` | `{ groupId }` | Notify other users that you are typing |
+| `stop-typing` | `{ groupId }` | Notify other users that you stopped typing |
+
+### Server to Client
+
+| Event | Payload | Description |
+| --- | --- | --- |
+| `new-message` | `message` | Receive a new message |
+| `user-typing` | `{ username, userId }` | A user started typing |
+| `user-stopped-typing` | `{ userId }` | A user stopped typing |
+| `group-members-updated` | `{ groupId }` | Refresh group member details |
+| `error` | `{ message }` | Socket error message |
+
+## Current Frontend Flow
+
+1. User registers or logs in.
+2. Access token and user profile are stored in local storage.
+3. Frontend connects to Socket.IO using the access token.
+4. User can create a group or join with an invite code.
+5. Selecting a group fetches fresh group details and recent messages.
+6. Messages are sent and received through Socket.IO.
+7. The Members button shows the current group members and admins.
+
+## MongoDB Reset Notes
+
+If MongoDB throws an old duplicate index error like:
+
+```text
+E11000 duplicate key error collection: test.users index: phoneNumber_1 dup key: { phoneNumber: null }
+```
+
+That means the database still has an old `phoneNumber_1` unique index from an older schema. For local/dev data, you can drop the old `users` collection or drop the old dev database. Mongoose will recreate collections and current indexes when the app writes data again.
+
+## Deployment Status
+
+Deployment has not been done yet.
+
+Recommended future deployment shape:
+
+- Frontend: Vercel or Cloudflare Pages
+- Backend: Render or Railway
+- Database: MongoDB Atlas
+
+The backend should be deployed as a long-running Node web service because it uses Socket.IO.
+
+## Author
+
+Javin Chutani
+
+GitHub: [@javin1106](https://github.com/javin1106)
+
+## License
 
 ISC
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/javin1106/GossipKaro/issues).
-
-## 🌟 Show your support
-
-Give a ⭐️ if you like this project!
-
----
-
-**Note**: Make sure to keep your `.env` file secure and never commit it to version control. The `.gitignore` file is already configured to exclude sensitive files.
