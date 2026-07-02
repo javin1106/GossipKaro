@@ -31,6 +31,8 @@ export const sendMessage = asyncHandler(async (req, res) => {
     sender: userId,
   });
 
+  await message.populate("sender", "username email");
+
   return res
     .status(201)
     .json(new ApiResponse(201, message, "Message sent successfully"));

@@ -87,14 +87,16 @@ export const getGroupDetails = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   if (!groupId) throw new ApiError(400, "Group ID is required");
 
-  const group = await Group.findById(groupId).populate("members", "username");
+  const group = await Group.findById(groupId)
+    .populate("members", "username email")
+    .populate("admins", "username email");
 
   if (!group) {
     throw new ApiError(404, "Group not found");
   }
 
   const isMember = group.members.some(
-    (memberId) => memberId.toString() === userId.toString(),
+    (member) => (member._id || member).toString() === userId.toString(),
   );
 
   if (!isMember) {
@@ -170,6 +172,7 @@ export const leaveGroup = asyncHandler(async (req, res) => {
   );
 
   await group.save();
+  req.app.get("io")?.to(groupId).emit("group-members-updated", { groupId });
 
   return res
     .status(200)

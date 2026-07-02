@@ -11,6 +11,10 @@ export const createInvite = asyncHandler(async (req, res) => {
   }
 
   const group = await Group.findById(groupId);
+  if (!group) {
+    throw new ApiError(404, "Group not found");
+  }
+
   const userId = req.user._id;
 
   const isMember = group.members.some(
@@ -45,6 +49,18 @@ export const joinInvite = asyncHandler(async (req, res) => {
     throw new ApiError(400, "The invite code has expired");
   }
 
+  if (invite.expiresAt && invite.expiresAt < new Date()) {
+    invite.isActive = false;
+    await invite.save();
+    throw new ApiError(400, "The invite code has expired");
+  }
+
+  if (invite.maxUses && invite.usedCount >= invite.maxUses) {
+    invite.isActive = false;
+    await invite.save();
+    throw new ApiError(400, "The invite code has reached its usage limit");
+  }
+
   const group = await Group.findById(invite.group);
   if (!group) {
     throw new ApiError(404, "Group not found");
@@ -63,7 +79,12 @@ export const joinInvite = asyncHandler(async (req, res) => {
   }
 
   group.members.push(userId);
+  invite.usedCount += 1;
   await group.save();
+  await invite.save();
+  req.app.get("io")?.to(group._id.toString()).emit("group-members-updated", {
+    groupId: group._id.toString(),
+  });
 
   return res
     .status(200)
