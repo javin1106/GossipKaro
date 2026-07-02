@@ -232,28 +232,6 @@ const socket = io("http://localhost:5000", {
 6. Messages are sent and received through Socket.IO.
 7. The Members button shows the current group members and admins.
 
-## MongoDB Reset Notes
-
-If MongoDB throws an old duplicate index error like:
-
-```text
-E11000 duplicate key error collection: test.users index: phoneNumber_1 dup key: { phoneNumber: null }
-```
-
-That means the database still has an old `phoneNumber_1` unique index from an older schema. For local/dev data, you can drop the old `users` collection or drop the old dev database. Mongoose will recreate collections and current indexes when the app writes data again.
-
-## Deployment Status
-
-Deployment has not been done yet.
-
-Recommended future deployment shape:
-
-- Frontend: Vercel or Cloudflare Pages
-- Backend: Render or Railway
-- Database: MongoDB Atlas
-
-The backend should be deployed as a long-running Node web service because it uses Socket.IO.
-
 ## Author
 
 Javin Chutani
