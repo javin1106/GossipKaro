@@ -14,10 +14,15 @@ It is not deployed yet. Run it locally with the commands below.
 - Register and login with JWT auth
 - Create chat groups
 - Join groups using invite codes or invite links
+- WhatsApp-inspired responsive chat UI
 - View your groups and active group details
 - View all members in a group
 - Send and receive messages in real time with Socket.IO
 - Typing indicators
+- Online presence per group
+- Unread message badges
+- Emoji message composer
+- Message reactions
 - Leave groups
 - Automatic group member refresh when users join or leave
 
@@ -35,6 +40,7 @@ It is not deployed yet. Run it locally with the commands below.
 - Node.js
 - Express 5
 - Socket.IO
+- Redis and Socket.IO Redis adapter for horizontal scaling
 - MongoDB + Mongoose
 - JWT
 - bcryptjs
@@ -101,9 +107,15 @@ REFRESH_TOKEN_SECRET=your_refresh_token_secret
 REFRESH_TOKEN_EXPIRY=10d
 
 CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
+
+# Optional. Enable when running more than one backend instance.
+REDIS_URL=redis://localhost:6379
+REDIS_REQUIRED=false
 ```
 
 Important MongoDB note: include the database name in the URI, for example `/gossipkaro`. If you omit it, MongoDB may use the default `test` database.
+
+Redis is optional for local development. Without `REDIS_URL`, the app runs in single-instance mode. With `REDIS_URL`, Socket.IO uses Redis pub/sub so events reach users connected to other backend instances.
 
 ### 3. Run the App
 
@@ -209,6 +221,8 @@ const socket = io("http://localhost:5000", {
 | --- | --- | --- |
 | `join-group` | `groupId` | Join a group room |
 | `send-message` | `{ groupId, content }` | Send a group message |
+| `react-message` | `{ groupId, messageId, emoji }` | Toggle a reaction on a message |
+| `mark-read` | `{ groupId }` | Mark a group as read for unread counts |
 | `typing` | `{ groupId }` | Notify other users that you are typing |
 | `stop-typing` | `{ groupId }` | Notify other users that you stopped typing |
 
@@ -217,6 +231,10 @@ const socket = io("http://localhost:5000", {
 | Event | Payload | Description |
 | --- | --- | --- |
 | `new-message` | `message` | Receive a new message |
+| `message-reaction-updated` | `{ groupId, messageId, reactions }` | Sync message reactions |
+| `unread-count-updated` | `{ groupId, unreadCount }` | Sync unread count after read state changes |
+| `online-users` | `{ groupId, userIds }` | Initial online users for a group |
+| `presence-updated` | `{ groupId, userId, isOnline }` | User online/offline changes |
 | `user-typing` | `{ username, userId }` | A user started typing |
 | `user-stopped-typing` | `{ userId }` | A user stopped typing |
 | `group-members-updated` | `{ groupId }` | Refresh group member details |
@@ -230,7 +248,44 @@ const socket = io("http://localhost:5000", {
 4. User can create a group or join with an invite code.
 5. Selecting a group fetches fresh group details and recent messages.
 6. Messages are sent and received through Socket.IO.
-7. The Members button shows the current group members and admins.
+7. Inactive groups show unread badges until opened.
+8. Online presence is tracked from active socket connections.
+9. Users can add emojis to messages and react to existing messages.
+10. The Members button shows the current group members and admins.
+
+## Scaling Flow
+
+The app can run in two modes:
+
+### Single Backend Instance
+
+```text
+Browser sockets -> one Node.js server -> MongoDB
+```
+
+In this mode, Socket.IO rooms and online presence can live in server memory.
+
+### Multiple Backend Instances
+
+```text
+Browser sockets -> Load Balancer -> Node server 1
+                              -> Node server 2
+                              -> Node server 3
+
+Node servers -> Redis Pub/Sub
+Node servers -> MongoDB
+```
+
+When `REDIS_URL` is configured:
+
+- Socket.IO uses the Redis adapter.
+- A room event emitted on one server is published through Redis.
+- Other servers receive that event and forward it to their connected sockets.
+- Online presence is stored in Redis sets instead of only local memory.
+
+MongoDB remains the source of truth for users, groups, messages, reactions, and read receipts. Redis is used for ephemeral real-time coordination, not permanent chat history.
+
+Production note: when scaling Socket.IO behind a load balancer, use sticky sessions for long-polling or force WebSocket transport. The Redis adapter synchronizes events across servers, but connection routing still needs to be handled correctly.
 
 ## Author
 

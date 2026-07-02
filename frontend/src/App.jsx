@@ -10,6 +10,7 @@ import {
   Plus,
   Send,
   ShieldCheck,
+  Smile,
   Sparkles,
   UserPlus,
   Users,
@@ -27,6 +28,8 @@ import {
 
 const TOKEN_KEY = "gossipkaro.token";
 const USER_KEY = "gossipkaro.user";
+const EMOJI_OPTIONS = ["😀", "😂", "😍", "🔥", "👏", "🙏", "💯", "🎉", "❤️", "👍", "😎", "🤝"];
+const REACTION_OPTIONS = ["👍", "❤️", "😂", "🔥", "👏", "😮"];
 
 function readStoredAuth() {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -66,6 +69,8 @@ export default function App() {
   const [actionLoading, setActionLoading] = useState("");
   const [connectionState, setConnectionState] = useState("offline");
   const [typingUsers, setTypingUsers] = useState({});
+  const [onlineUsersByGroup, setOnlineUsersByGroup] = useState({});
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pendingInviteCode, setPendingInviteCode] = useState(getInviteCodeFromLocation);
 
   const socketRef = useRef(null);
@@ -89,6 +94,7 @@ export default function App() {
 
   const isAuthed = Boolean(auth.token && auth.user);
   const typingNames = Object.values(typingUsers);
+  const activeOnlineUserIds = onlineUsersByGroup[activeGroupId] || [];
 
   useEffect(() => {
     activeGroupRef.current = activeGroupId;
@@ -154,7 +160,23 @@ export default function App() {
     });
 
     socket.on("new-message", (message) => {
-      if (message.group !== activeGroupRef.current) return;
+      const messageGroupId = getEntityId(message.group);
+      const activeId = activeGroupRef.current;
+      const senderId = getEntityId(message.sender);
+      const isOwnMessage = senderId === getEntityId(auth.user);
+
+      if (messageGroupId !== activeId) {
+        if (!isOwnMessage) {
+          setGroups((current) =>
+            current.map((group) =>
+              group._id === messageGroupId
+                ? { ...group, unreadCount: (group.unreadCount || 0) + 1 }
+                : group,
+            ),
+          );
+        }
+        return;
+      }
 
       setMessages((current) => {
         if (current.some((item) => item._id === message._id)) {
@@ -162,6 +184,44 @@ export default function App() {
         }
 
         return [...current, message];
+      });
+      socket.emit("mark-read", { groupId: messageGroupId });
+    });
+
+    socket.on("message-reaction-updated", ({ groupId, messageId, reactions }) => {
+      if (groupId !== activeGroupRef.current) return;
+
+      setMessages((current) =>
+        current.map((message) =>
+          message._id === messageId ? { ...message, reactions } : message,
+        ),
+      );
+    });
+
+    socket.on("unread-count-updated", ({ groupId, unreadCount }) => {
+      setGroups((current) =>
+        current.map((group) => (group._id === groupId ? { ...group, unreadCount } : group)),
+      );
+    });
+
+    socket.on("online-users", ({ groupId, userIds }) => {
+      setOnlineUsersByGroup((current) => ({
+        ...current,
+        [groupId]: userIds || [],
+      }));
+    });
+
+    socket.on("presence-updated", ({ groupId, userId, isOnline }) => {
+      setOnlineUsersByGroup((current) => {
+        const currentIds = current[groupId] || [];
+        const nextIds = isOnline
+          ? Array.from(new Set([...currentIds, userId]))
+          : currentIds.filter((id) => id !== userId);
+
+        return {
+          ...current,
+          [groupId]: nextIds,
+        };
       });
     });
 
@@ -274,6 +334,8 @@ export default function App() {
     setActiveGroupId("");
     setMessageDraft("");
     setTypingUsers({});
+    setOnlineUsersByGroup({});
+    setShowEmojiPicker(false);
     setConnectionState("offline");
 
     if (showMessage) {
@@ -357,6 +419,12 @@ export default function App() {
 
       if (messageLoadRef.current === groupId) {
         setMessages(payload.data?.messages || []);
+        socketRef.current?.emit("mark-read", { groupId });
+        setGroups((current) =>
+          current.map((group) =>
+            group._id === groupId ? { ...group, unreadCount: 0 } : group,
+          ),
+        );
       }
     } catch (error) {
       showNotice(error.message, "error");
@@ -519,6 +587,21 @@ export default function App() {
     });
     socketRef.current.emit("stop-typing", { groupId: activeGroupId });
     setMessageDraft("");
+    setShowEmojiPicker(false);
+  }
+
+  function addEmoji(emoji) {
+    setMessageDraft((current) => `${current}${emoji}`);
+  }
+
+  function reactToMessage(messageId, emoji) {
+    if (!activeGroupId || !socketRef.current?.connected) return;
+
+    socketRef.current.emit("react-message", {
+      groupId: activeGroupId,
+      messageId,
+      emoji,
+    });
   }
 
   if (booting) {
@@ -603,7 +686,13 @@ export default function App() {
                     <strong>{group.groupName}</strong>
                     <small>{group.description || `${group.members?.length || 0} members`}</small>
                   </span>
-                  <span className="group-date">{formatGroupDate(group.updatedAt)}</span>
+                  <span className="group-meta">
+                    {group.unreadCount > 0 ? (
+                      <span className="unread-badge">{group.unreadCount}</span>
+                    ) : (
+                      <span className="group-date">{formatGroupDate(group.updatedAt)}</span>
+                    )}
+                  </span>
                 </button>
               ))
             )}
@@ -618,7 +707,10 @@ export default function App() {
                   <div className="group-avatar large">{getInitials(activeGroup.groupName)}</div>
                   <div>
                     <h1>{activeGroup.groupName}</h1>
-                    <p>{activeGroup.members?.length || 0} members</p>
+                    <p>
+                      {activeGroup.members?.length || 0} members
+                      {activeOnlineUserIds.length > 0 ? ` · ${activeOnlineUserIds.length} online` : ""}
+                    </p>
                   </div>
                 </div>
 
@@ -660,7 +752,12 @@ export default function App() {
                   <EmptyState icon={<MessageCircle />} title="No messages yet" text="Start the chat." />
                 ) : (
                   sortedMessages.map((message) => (
-                    <MessageBubble key={message._id} message={message} user={auth.user} />
+                    <MessageBubble
+                      key={message._id}
+                      message={message}
+                      user={auth.user}
+                      onReact={reactToMessage}
+                    />
                   ))
                 )}
               </div>
@@ -670,6 +767,26 @@ export default function App() {
               </div>
 
               <form className="composer" onSubmit={sendMessage}>
+                <div className="emoji-wrap">
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="Add emoji"
+                    aria-label="Add emoji"
+                    onClick={() => setShowEmojiPicker((current) => !current)}
+                  >
+                    <Smile />
+                  </button>
+                  {showEmojiPicker ? (
+                    <div className="emoji-picker">
+                      {EMOJI_OPTIONS.map((emoji) => (
+                        <button type="button" key={emoji} onClick={() => addEmoji(emoji)}>
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <input
                   value={messageDraft}
                   onChange={handleDraftChange}
@@ -790,7 +907,12 @@ export default function App() {
                   <div className="avatar small">{getInitials(memberName)}</div>
                   <div>
                     <strong>{memberName}</strong>
-                    {typeof member === "object" && member?.email ? <span>{member.email}</span> : null}
+                    {typeof member === "object" && member?.email ? (
+                      <span>
+                        {member.email}
+                        {activeOnlineUserIds.includes(memberId) ? " · Online" : ""}
+                      </span>
+                    ) : null}
                   </div>
                   {isAdmin ? <span className="role-pill">Admin</span> : null}
                 </div>
@@ -881,7 +1003,7 @@ function AuthScreen({ mode, pendingInviteCode, loading, onModeChange, onSubmit }
   );
 }
 
-function MessageBubble({ message, user }) {
+function MessageBubble({ message, user, onReact }) {
   const sender = message.sender;
   const senderId = getEntityId(sender);
   const userId = getEntityId(user);
@@ -892,12 +1014,45 @@ function MessageBubble({ message, user }) {
       : isOwn
         ? user?.username || user?.email
         : "Unknown";
+  const groupedReactions = (message.reactions || []).reduce((acc, reaction) => {
+    if (!acc[reaction.emoji]) {
+      acc[reaction.emoji] = [];
+    }
+
+    acc[reaction.emoji].push(reaction.user);
+    return acc;
+  }, {});
 
   return (
     <article className={`message-bubble ${isOwn ? "own" : ""}`}>
       {!isOwn ? <span className="message-sender">{senderName}</span> : null}
       <p>{message.content}</p>
       <time>{formatMessageTime(message.createdAt)}</time>
+      {Object.keys(groupedReactions).length > 0 ? (
+        <div className="reaction-row">
+          {Object.entries(groupedReactions).map(([emoji, users]) => {
+            const reactedByMe = users.some((reactionUser) => getEntityId(reactionUser) === userId);
+
+            return (
+              <button
+                className={`reaction-chip ${reactedByMe ? "active" : ""}`}
+                type="button"
+                key={emoji}
+                onClick={() => onReact(message._id, emoji)}
+              >
+                {emoji} {users.length}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      <div className="quick-reactions" aria-label="React to message">
+        {REACTION_OPTIONS.map((emoji) => (
+          <button type="button" key={emoji} onClick={() => onReact(message._id, emoji)}>
+            {emoji}
+          </button>
+        ))}
+      </div>
     </article>
   );
 }

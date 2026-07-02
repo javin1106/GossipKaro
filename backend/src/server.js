@@ -2,6 +2,7 @@ import "./config/env.js";
 import { allowedOrigins } from "./config/env.js";
 import app from "./app.js";
 import connectDB from "./config/db.js";
+import connectRedis from "./config/redis.js";
 
 // Socket.io
 import http from "http";
@@ -16,7 +17,9 @@ const io = new Server(server, {
   },
 });
 
-setupSocket(io);
+const redisState = await connectRedis(io);
+
+setupSocket(io, redisState);
 app.set("io", io);
 
 const PORT = process.env.PORT || 5000;

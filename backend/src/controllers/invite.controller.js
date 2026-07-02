@@ -79,6 +79,7 @@ export const joinInvite = asyncHandler(async (req, res) => {
   }
 
   group.members.push(userId);
+  group.readReceipts.push({ user: userId, lastReadAt: new Date() });
   invite.usedCount += 1;
   await group.save();
   await invite.save();

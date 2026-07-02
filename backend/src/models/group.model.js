@@ -29,6 +29,20 @@ const groupSchema = new mongoose.Schema(
       },
     ],
 
+    readReceipts: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        lastReadAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+
     isDirect: {
       type: Boolean,
       default: true,

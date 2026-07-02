@@ -18,6 +18,7 @@ export const createGroup = asyncHandler(async (req, res) => {
     description,
     members: [userId],
     admins: [userId],
+    readReceipts: [{ user: userId, lastReadAt: new Date() }],
     isDirect: false,
   });
 
@@ -60,7 +61,8 @@ export const getMessages = asyncHandler(async (req, res) => {
     })
     .skip(skip)
     .limit(limit)
-    .populate("sender", "username email");
+    .populate("sender", "username email")
+    .populate("reactions.user", "username email");
 
   const totalMessages = await Message.countDocuments({ group: groupId });
 
@@ -193,7 +195,26 @@ export const getUserGroups = asyncHandler(async (req, res) => {
     .populate("admins", "username email")
     .sort({ updatedAt: -1 });
 
+  const groupsWithUnread = await Promise.all(
+    groups.map(async (group) => {
+      const receipt = group.readReceipts.find(
+        (item) => item.user.toString() === userId.toString(),
+      );
+      const lastReadAt = receipt?.lastReadAt || new Date(0);
+      const unreadCount = await Message.countDocuments({
+        group: group._id,
+        sender: { $ne: userId },
+        createdAt: { $gt: lastReadAt },
+      });
+
+      return {
+        ...group.toObject(),
+        unreadCount,
+      };
+    }),
+  );
+
   return res
     .status(200)
-    .json(new ApiResponse(200, groups, "User's groups fetched successfully"));
+    .json(new ApiResponse(200, groupsWithUnread, "User's groups fetched successfully"));
 });
