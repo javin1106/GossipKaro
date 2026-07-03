@@ -5,6 +5,8 @@ import Message from "./models/message.model.js";
 
 const USER_SOCKET_KEY_PREFIX = "gossipkaro:presence:user:";
 const PRESENCE_TTL_SECONDS = 24 * 60 * 60;
+const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_CONTENT_LENGTH = 12000;
 
 const setupSocket = (io, { presenceClient } = {}) => {
   const onlineUsers = new Map();
@@ -92,6 +94,72 @@ const setupSocket = (io, { presenceClient } = {}) => {
     return group;
   };
 
+  const populateMessage = async (message) => {
+    await message.populate("sender", "username email");
+    await message.populate("reactions.user", "username email");
+    await message.populate({
+      path: "replyTo",
+      select:
+        "content sender messageType attachment isDeleted createdAt",
+      populate: {
+        path: "sender",
+        select: "username email",
+      },
+    });
+
+    return message;
+  };
+
+  const findMemberGroup = async (groupId, userId) => {
+    const group = await Group.findById(groupId).select("members admins");
+    if (!group) return null;
+
+    const isMember = group.members.some(
+      (memberId) => memberId.toString() === userId.toString(),
+    );
+
+    return isMember ? group : null;
+  };
+
+  const validateAttachment = (attachment) => {
+    if (!attachment) return null;
+
+    const { fileName, mimeType, size, dataUrl } = attachment;
+    const normalizedSize = Number(size);
+
+    if (
+      typeof fileName !== "string" ||
+      typeof mimeType !== "string" ||
+      typeof dataUrl !== "string" ||
+      !Number.isFinite(normalizedSize)
+    ) {
+      return { error: "Attachment details are incomplete" };
+    }
+
+    if (normalizedSize > MAX_ATTACHMENT_BYTES) {
+      return { error: "Attachment must be 2MB or smaller" };
+    }
+
+    if (!dataUrl.startsWith("data:")) {
+      return { error: "Attachment data is invalid" };
+    }
+
+    return {
+      attachment: {
+        fileName: fileName.trim().slice(0, 180),
+        mimeType: mimeType.trim().slice(0, 120),
+        size: normalizedSize,
+        dataUrl,
+      },
+    };
+  };
+
+  const resolveMessageType = (attachment, requestedType = "text") => {
+    if (!attachment) return "text";
+    if (attachment.mimeType?.startsWith("image/")) return "image";
+    return requestedType === "audio" || requestedType === "video" ? requestedType : "file";
+  };
+
   // middleware
   io.use(async (socket, next) => {
     try {
@@ -173,41 +241,144 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("send-message", async ({ groupId, content }) => {
+    socket.on(
+      "send-message",
+      async ({
+        groupId,
+        content,
+        replyTo,
+        messageType = "text",
+        attachment,
+      }) => {
       try {
-        if (!groupId || !content?.trim()) {
+        const normalizedContent = typeof content === "string" ? content.trim() : "";
+        if (!groupId || (!normalizedContent && !attachment)) {
           return socket.emit("error", {
             message: "Group ID and content are required",
           });
         }
 
-        const group = await Group.findById(groupId).select("members");
-        if (!group) {
-          return socket.emit("error", { message: "Group not found" });
+        if (normalizedContent.length > MAX_CONTENT_LENGTH) {
+          return socket.emit("error", { message: "Message is too long" });
         }
 
-        const isMember = group.members.some(
-          (memberId) => memberId.toString() === socket.user._id.toString(),
-        );
+        const group = await findMemberGroup(groupId, socket.user._id);
+        if (!group) {
+          return socket.emit("error", { message: "Group not found or not joined" });
+        }
 
-        if (!isMember) {
-          return socket.emit("error", { message: "Not a group member" });
+        let replyMessage = null;
+        if (replyTo) {
+          replyMessage = await Message.findOne({
+            _id: replyTo,
+            group: groupId,
+            isDeleted: false,
+          });
+
+          if (!replyMessage) {
+            return socket.emit("error", { message: "Reply target not found" });
+          }
+        }
+
+        const attachmentResult = validateAttachment(attachment);
+        if (attachmentResult?.error) {
+          return socket.emit("error", { message: attachmentResult.error });
         }
 
         const message = await Message.create({
           group: groupId,
           sender: socket.user._id,
-          content: content.trim(),
-          messageType: "text",
+          content: normalizedContent || attachmentResult?.attachment?.fileName || "Attachment",
+          messageType: resolveMessageType(attachmentResult?.attachment, messageType),
+          replyTo: replyMessage?._id || null,
+          attachment: attachmentResult?.attachment,
         });
 
-        // Populate sender info before broadcasting
-        await message.populate("sender", "username email");
-        await message.populate("reactions.user", "username email");
+        await populateMessage(message);
 
         io.to(groupId).emit("new-message", message);
       } catch (err) {
         socket.emit("error", { message: "Failed to send message" });
+      }
+    });
+
+    socket.on("edit-message", async ({ groupId, messageId, content }) => {
+      try {
+        const normalizedContent = typeof content === "string" ? content.trim() : "";
+        if (!groupId || !messageId || !normalizedContent) {
+          return socket.emit("error", { message: "Edit details are required" });
+        }
+
+        if (normalizedContent.length > MAX_CONTENT_LENGTH) {
+          return socket.emit("error", { message: "Message is too long" });
+        }
+
+        const group = await findMemberGroup(groupId, socket.user._id);
+        if (!group) {
+          return socket.emit("error", { message: "Group not found or not joined" });
+        }
+
+        const message = await Message.findOne({
+          _id: messageId,
+          group: groupId,
+          sender: socket.user._id,
+          isDeleted: false,
+        });
+
+        if (!message) {
+          return socket.emit("error", { message: "Message not found or not editable" });
+        }
+
+        if (message.messageType !== "text") {
+          return socket.emit("error", { message: "Only text messages can be edited" });
+        }
+
+        message.content = normalizedContent;
+        message.isEdited = true;
+        message.editedAt = new Date();
+
+        await message.save();
+        await populateMessage(message);
+
+        io.to(groupId).emit("message-updated", message);
+      } catch {
+        socket.emit("error", { message: "Failed to edit message" });
+      }
+    });
+
+    socket.on("delete-message", async ({ groupId, messageId }) => {
+      try {
+        if (!groupId || !messageId) {
+          return socket.emit("error", { message: "Delete details are required" });
+        }
+
+        const group = await findMemberGroup(groupId, socket.user._id);
+        if (!group) {
+          return socket.emit("error", { message: "Group not found or not joined" });
+        }
+
+        const message = await Message.findOne({
+          _id: messageId,
+          group: groupId,
+          sender: socket.user._id,
+          isDeleted: false,
+        });
+
+        if (!message) {
+          return socket.emit("error", { message: "Message not found or not deletable" });
+        }
+
+        message.isDeleted = true;
+        message.deletedAt = new Date();
+        message.content = "[deleted]";
+        message.attachment = undefined;
+        message.reactions = [];
+
+        await message.save();
+
+        io.to(groupId).emit("message-deleted", { groupId, messageId });
+      } catch {
+        socket.emit("error", { message: "Failed to delete message" });
       }
     });
 

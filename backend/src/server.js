@@ -3,6 +3,7 @@ import { allowedOrigins } from "./config/env.js";
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import connectRedis from "./config/redis.js";
+import { createOtpStore } from "./utils/otpStore.js";
 
 // Socket.io
 import http from "http";
@@ -15,12 +16,14 @@ const io = new Server(server, {
     origin: allowedOrigins.includes("*") ? "*" : allowedOrigins,
     credentials: true,
   },
+  maxHttpBufferSize: 8 * 1024 * 1024,
 });
 
 const redisState = await connectRedis(io);
 
 setupSocket(io, redisState);
 app.set("io", io);
+app.set("otpStore", createOtpStore(redisState.otpClient));
 
 const PORT = process.env.PORT || 5000;
 

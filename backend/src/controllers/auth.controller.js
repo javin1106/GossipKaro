@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { sendRegistrationOtpEmail } from "../utils/email.js";
 
 const cookieOptions = {
   httpOnly: true,
@@ -30,43 +31,155 @@ const generateAccessandRefreshTokens = async (userId) => {
   }
 };
 
+const getSafeUser = (user) => ({
+  id: user._id,
+  username: user.username,
+  email: user.email,
+  isVerified: user.isVerified,
+});
+
+const getOtpStore = (req) => {
+  const otpStore = req.app.get("otpStore");
+  if (!otpStore) throw new ApiError(500, "OTP service is unavailable");
+  return otpStore;
+};
+
+const buildOtpResponse = (otpResult) => ({
+  expiresInSeconds: otpResult.expiresInSeconds,
+});
+
 export const registerUser = asyncHandler(async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username?.trim() || !email?.trim() || !password)
     throw new ApiError(400, "All fields are required");
 
-  const exists = await User.findOne({ email });
-  if (exists) throw new ApiError(409, "User already exists");
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedUsername = username.trim();
+  const existingEmailUser = await User.findOne({ email: normalizedEmail });
+  const existingUsernameUser = await User.findOne({ username: normalizedUsername });
 
-  const user = await User.create({
-    username: username.trim(),
-    email: email.trim(),
-    password,
+  if (existingEmailUser && existingEmailUser.isVerified !== false) {
+    throw new ApiError(409, "User already exists");
+  }
+
+  if (
+    existingUsernameUser &&
+    existingUsernameUser._id.toString() !== existingEmailUser?._id.toString()
+  ) {
+    throw new ApiError(409, "Username already exists");
+  }
+
+  const user =
+    existingEmailUser ||
+    new User({
+      email: normalizedEmail,
+    });
+
+  user.username = normalizedUsername;
+  user.password = password;
+  user.isVerified = false;
+  user.refreshToken = null;
+  await user.save();
+
+  const otpStore = getOtpStore(req);
+  const otpResult = await otpStore.createOtp(normalizedEmail);
+  await sendRegistrationOtpEmail({
+    to: normalizedEmail,
+    otp: otpResult.otp,
+    username: user.username,
   });
-
-  const { accessToken, refreshToken } = await generateAccessandRefreshTokens(
-    user._id,
-  );
 
   return res
     .status(201)
-    .cookie("refreshToken", refreshToken, cookieOptions)
-    .cookie("accessToken", accessToken, cookieOptions)
     .json(
       new ApiResponse(
         201,
         {
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email,
-          },
-          accessToken,
+          email: normalizedEmail,
+          ...buildOtpResponse(otpResult),
         },
-        "User registered successfully",
+        "OTP sent for account verification",
       ),
     );
+});
+
+export const verifyRegistrationOtp = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+
+  if (!email?.trim() || !otp?.trim()) {
+    throw new ApiError(400, "Email and OTP are required");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const otpStore = getOtpStore(req);
+  const verification = await otpStore.verifyOtp(normalizedEmail, otp.trim());
+
+  if (!verification.ok) {
+    const message =
+      verification.reason === "locked"
+        ? "Too many invalid OTP attempts. Please request a new OTP"
+        : verification.reason === "expired"
+          ? "OTP expired. Please request a new OTP"
+          : "Invalid OTP";
+    throw new ApiError(400, message);
+  }
+
+  const user = await User.findOne({ email: normalizedEmail });
+  if (!user) throw new ApiError(404, "User not found");
+
+  user.isVerified = true;
+  await user.save({ validateModifiedOnly: true });
+
+  const { accessToken, refreshToken } = await generateAccessandRefreshTokens(user._id);
+
+  return res
+    .status(200)
+    .cookie("refreshToken", refreshToken, cookieOptions)
+    .cookie("accessToken", accessToken, cookieOptions)
+    .json(
+      new ApiResponse(
+        200,
+        {
+          user: getSafeUser(user),
+          accessToken,
+        },
+        "Account verified successfully",
+      ),
+    );
+});
+
+export const resendRegistrationOtp = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+
+  if (!email?.trim()) {
+    throw new ApiError(400, "Email is required");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = await User.findOne({ email: normalizedEmail });
+
+  if (!user) throw new ApiError(404, "User not found");
+  if (user.isVerified !== false) throw new ApiError(400, "Account is already verified");
+
+  const otpStore = getOtpStore(req);
+  const otpResult = await otpStore.createOtp(normalizedEmail);
+  await sendRegistrationOtpEmail({
+    to: normalizedEmail,
+    otp: otpResult.otp,
+    username: user.username,
+  });
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        email: normalizedEmail,
+        ...buildOtpResponse(otpResult),
+      },
+      "OTP resent",
+    ),
+  );
 });
 
 export const loginUser = asyncHandler(async (req, res) => {
@@ -75,8 +188,10 @@ export const loginUser = asyncHandler(async (req, res) => {
   if (!email || !password)
     throw new ApiError(400, "Email and Password are required");
 
-  const user = await User.findOne({ email });
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = await User.findOne({ email: normalizedEmail });
   if (!user) throw new ApiError(404, "User not found");
+  if (user.isVerified === false) throw new ApiError(403, "Please verify your account first");
 
   const isMatch = await user.comparePassword(password);
   if (!isMatch) throw new ApiError(401, "Invalid credentials");
@@ -97,6 +212,7 @@ export const loginUser = asyncHandler(async (req, res) => {
             id: user._id,
             username: user.username,
             email: user.email,
+            isVerified: user.isVerified,
           },
           accessToken,
         },

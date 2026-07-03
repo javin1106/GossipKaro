@@ -2,16 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Copy,
+  Download,
   DoorOpen,
+  Edit3,
+  File as FileIcon,
+  Image as ImageIcon,
   Link as LinkIcon,
   Loader2,
   LogOut,
   MessageCircle,
+  Paperclip,
   Plus,
+  Reply,
   Send,
   ShieldCheck,
   Smile,
   Sparkles,
+  Trash2,
   UserPlus,
   Users,
   X,
@@ -28,8 +35,78 @@ import {
 
 const TOKEN_KEY = "gossipkaro.token";
 const USER_KEY = "gossipkaro.user";
+const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const EMOJI_OPTIONS = ["😀", "😂", "😍", "🔥", "👏", "🙏", "💯", "🎉", "❤️", "👍", "😎", "🤝"];
 const REACTION_OPTIONS = ["👍", "❤️", "😂", "🔥", "👏", "😮"];
+
+function getSenderName(sender, fallback = "Unknown") {
+  if (typeof sender === "object" && sender) {
+    return sender.username || sender.email || fallback;
+  }
+
+  return fallback;
+}
+
+function formatFileSize(size = 0) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function hasUsableAttachment(attachment) {
+  if (!attachment) return false;
+
+  return Boolean(
+    attachment.fileName ||
+      attachment.dataUrl ||
+      attachment.mimeType ||
+      (attachment.size !== undefined &&
+        attachment.size !== null &&
+        Number.isFinite(Number(attachment.size))),
+  );
+}
+
+function fallbackMessageView(message) {
+  const hasAttachment = hasUsableAttachment(message.attachment);
+
+  return {
+    content: message.isDeleted ? "This message was deleted" : message.content || "",
+    attachmentDataUrl: hasAttachment ? message.attachment?.dataUrl || "" : "",
+    attachmentLocked: false,
+    attachmentFailed: false,
+    locked: false,
+    failed: false,
+    reply: buildReplyView(message.replyTo),
+  };
+}
+
+function buildReplyView(replyTo) {
+  if (!replyTo) return null;
+
+  const senderName = getSenderName(replyTo.sender);
+
+  if (replyTo.isDeleted) {
+    return {
+      senderName,
+      content: "Deleted message",
+      locked: false,
+      failed: false,
+    };
+  }
+
+  return {
+    senderName,
+    content: replyTo.content || replyTo.attachment?.fileName || "Attachment",
+    locked: false,
+    failed: false,
+  };
+}
+
+function getReplyPreview(message, view) {
+  if (!message) return "";
+  if (message.isDeleted) return "Deleted message";
+  return view?.content || message.content || message.attachment?.fileName || "Attachment";
+}
 
 function readStoredAuth() {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -72,12 +149,17 @@ export default function App() {
   const [onlineUsersByGroup, setOnlineUsersByGroup] = useState({});
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pendingInviteCode, setPendingInviteCode] = useState(getInviteCodeFromLocation);
+  const [otpChallenge, setOtpChallenge] = useState(null);
+  const [replyTarget, setReplyTarget] = useState(null);
+  const [editingMessage, setEditingMessage] = useState(null);
+  const [fileDraft, setFileDraft] = useState(null);
 
   const socketRef = useRef(null);
   const activeGroupRef = useRef("");
   const messageLoadRef = useRef("");
   const typingTimerRef = useRef(null);
   const autoJoinRef = useRef(false);
+  const fileInputRef = useRef(null);
 
   const activeGroup = useMemo(
     () => groups.find((group) => group._id === activeGroupId),
@@ -195,6 +277,48 @@ export default function App() {
         current.map((message) =>
           message._id === messageId ? { ...message, reactions } : message,
         ),
+      );
+    });
+
+    socket.on("message-updated", (message) => {
+      const messageGroupId = getEntityId(message.group);
+      if (messageGroupId !== activeGroupRef.current) return;
+
+      setMessages((current) =>
+        current.map((item) => (item._id === message._id ? message : item)),
+      );
+    });
+
+    socket.on("message-deleted", ({ groupId, messageId }) => {
+      if (groupId !== activeGroupRef.current) return;
+
+      setMessages((current) =>
+        current.map((message) => {
+          if (message._id === messageId) {
+            return {
+              ...message,
+              content: "[deleted]",
+              attachment: null,
+              reactions: [],
+              isDeleted: true,
+              deletedAt: new Date().toISOString(),
+            };
+          }
+
+          if (getEntityId(message.replyTo) === messageId) {
+            return {
+              ...message,
+              replyTo: {
+                ...message.replyTo,
+                content: "[deleted]",
+                attachment: null,
+                isDeleted: true,
+              },
+            };
+          }
+
+          return message;
+        }),
       );
     });
 
@@ -336,6 +460,10 @@ export default function App() {
     setTypingUsers({});
     setOnlineUsersByGroup({});
     setShowEmojiPicker(false);
+    setReplyTarget(null);
+    setEditingMessage(null);
+    setFileDraft(null);
+    setOtpChallenge(null);
     setConnectionState("offline");
 
     if (showMessage) {
@@ -370,6 +498,14 @@ export default function App() {
         body: payload,
       });
 
+      if (authMode === "register") {
+        setOtpChallenge({
+          email: response.data.email,
+        });
+        showNotice("OTP sent to your email", "success");
+        return;
+      }
+
       const nextAuth = {
         token: response.data.accessToken,
         user: response.data.user,
@@ -378,6 +514,65 @@ export default function App() {
       saveAuth(nextAuth);
       await fetchGroups(nextAuth.token);
       showNotice(authMode === "login" ? "Welcome back" : "Account ready", "success");
+    } catch (error) {
+      if (authMode === "login" && error.message?.toLowerCase().includes("verify")) {
+        setOtpChallenge({
+          email: payload.email,
+        });
+      }
+
+      showNotice(error.message, "error");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function verifyOtp(event) {
+    event.preventDefault();
+    if (!otpChallenge?.email) return;
+
+    setActionLoading("verify-otp");
+
+    const form = new FormData(event.currentTarget);
+    const otp = form.get("otp")?.trim();
+
+    try {
+      const response = await apiRequest("/api/auth/verify-otp", {
+        method: "POST",
+        body: {
+          email: otpChallenge.email,
+          otp,
+        },
+      });
+
+      const nextAuth = {
+        token: response.data.accessToken,
+        user: response.data.user,
+      };
+
+      saveAuth(nextAuth);
+      setOtpChallenge(null);
+      await fetchGroups(nextAuth.token);
+      showNotice("Account verified", "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function resendOtp() {
+    if (!otpChallenge?.email) return;
+
+    setActionLoading("resend-otp");
+
+    try {
+      await apiRequest("/api/auth/resend-otp", {
+        method: "POST",
+        body: { email: otpChallenge.email },
+      });
+
+      showNotice("OTP resent to your email", "success");
     } catch (error) {
       showNotice(error.message, "error");
     } finally {
@@ -405,6 +600,11 @@ export default function App() {
     setActiveGroupId(groupId);
     setMessages([]);
     setTypingUsers({});
+    setMessageDraft("");
+    setReplyTarget(null);
+    setEditingMessage(null);
+    setFileDraft(null);
+    setShowEmojiPicker(false);
     setMessagesLoading(true);
     messageLoadRef.current = groupId;
 
@@ -450,9 +650,11 @@ export default function App() {
         body: { groupName, description },
       });
 
-      await fetchGroups(auth.token, response.data._id);
+      const groupId = response.data._id;
+
+      await fetchGroups(auth.token, groupId);
       setModal(null);
-      await selectGroup(response.data._id);
+      await selectGroup(groupId);
       showNotice("Group created", "success");
     } catch (error) {
       showNotice(error.message, "error");
@@ -548,6 +750,9 @@ export default function App() {
 
       setActiveGroupId("");
       setMessages([]);
+      setReplyTarget(null);
+      setEditingMessage(null);
+      setFileDraft(null);
       await fetchGroups(auth.token);
       showNotice("Left group", "success");
     } catch (error) {
@@ -570,24 +775,123 @@ export default function App() {
     }, 1100);
   }
 
-  function sendMessage(event) {
+  function clearComposer() {
+    setMessageDraft("");
+    setReplyTarget(null);
+    setEditingMessage(null);
+    setFileDraft(null);
+    setShowEmojiPicker(false);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function handleFileSelect(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) return;
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showNotice("Files must be 2MB or smaller", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setFileDraft({
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        dataUrl: reader.result,
+      });
+    };
+    reader.onerror = () => showNotice("Could not read file", "error");
+    reader.readAsDataURL(file);
+  }
+
+  function startReply(message) {
+    if (message.isDeleted) return;
+    setReplyTarget(message);
+    setEditingMessage(null);
+  }
+
+  function startEditMessage(message) {
+    if (message.isDeleted || message.messageType !== "text") return;
+
+    const view = fallbackMessageView(message);
+
+    setEditingMessage(message);
+    setReplyTarget(null);
+    setFileDraft(null);
+    setMessageDraft(view.content || "");
+  }
+
+  function deleteMessage(message) {
+    if (!activeGroupId || !socketRef.current?.connected || message.isDeleted) return;
+    if (!window.confirm("Delete this message?")) return;
+
+    socketRef.current.emit("delete-message", {
+      groupId: activeGroupId,
+      messageId: message._id,
+    });
+
+    if (replyTarget?._id === message._id || editingMessage?._id === message._id) {
+      clearComposer();
+    }
+  }
+
+  async function sendMessage(event) {
     event.preventDefault();
     const content = messageDraft.trim();
 
-    if (!content || !activeGroupId) return;
+    if ((!content && !fileDraft) || !activeGroupId) return;
 
     if (!socketRef.current?.connected) {
       showNotice("Realtime connection is offline", "error");
       return;
     }
 
-    socketRef.current.emit("send-message", {
-      groupId: activeGroupId,
-      content,
-    });
-    socketRef.current.emit("stop-typing", { groupId: activeGroupId });
-    setMessageDraft("");
-    setShowEmojiPicker(false);
+    setActionLoading("send-message");
+
+    try {
+      const outgoingContent = content || fileDraft?.fileName || "Attachment";
+
+      if (editingMessage) {
+        socketRef.current.emit("edit-message", {
+          groupId: activeGroupId,
+          messageId: editingMessage._id,
+          content: outgoingContent,
+        });
+      } else {
+        let attachment = null;
+
+        if (fileDraft) {
+          attachment = {
+            fileName: fileDraft.fileName,
+            mimeType: fileDraft.mimeType,
+            size: fileDraft.size,
+            dataUrl: fileDraft.dataUrl,
+          };
+        }
+
+        socketRef.current.emit("send-message", {
+          groupId: activeGroupId,
+          content: outgoingContent,
+          replyTo: replyTarget?._id,
+          messageType: fileDraft?.mimeType?.startsWith("image/") ? "image" : fileDraft ? "file" : "text",
+          attachment,
+        });
+      }
+
+      socketRef.current.emit("stop-typing", { groupId: activeGroupId });
+      clearComposer();
+    } catch {
+      showNotice("Could not send the message", "error");
+    } finally {
+      setActionLoading("");
+    }
   }
 
   function addEmoji(emoji) {
@@ -621,9 +925,18 @@ export default function App() {
         <AuthScreen
           mode={authMode}
           pendingInviteCode={pendingInviteCode}
-          loading={actionLoading === "login" || actionLoading === "register"}
+          otpChallenge={otpChallenge}
+          loading={
+            actionLoading === "login" ||
+            actionLoading === "register" ||
+            actionLoading === "verify-otp"
+          }
+          resendLoading={actionLoading === "resend-otp"}
           onModeChange={setAuthMode}
           onSubmit={handleAuthSubmit}
+          onVerifyOtp={verifyOtp}
+          onResendOtp={resendOtp}
+          onCancelOtp={() => setOtpChallenge(null)}
         />
         <Notice notice={notice} />
       </>
@@ -757,6 +1070,9 @@ export default function App() {
                       message={message}
                       user={auth.user}
                       onReact={reactToMessage}
+                      onReply={startReply}
+                      onEdit={startEditMessage}
+                      onDelete={deleteMessage}
                     />
                   ))
                 )}
@@ -766,37 +1082,125 @@ export default function App() {
                 {typingNames.length > 0 ? `${typingNames.join(", ")} typing...` : ""}
               </div>
 
-              <form className="composer" onSubmit={sendMessage}>
-                <div className="emoji-wrap">
-                  <button
-                    className="icon-button"
-                    type="button"
-                    title="Add emoji"
-                    aria-label="Add emoji"
-                    onClick={() => setShowEmojiPicker((current) => !current)}
-                  >
-                    <Smile />
-                  </button>
-                  {showEmojiPicker ? (
-                    <div className="emoji-picker">
-                      {EMOJI_OPTIONS.map((emoji) => (
-                        <button type="button" key={emoji} onClick={() => addEmoji(emoji)}>
-                          {emoji}
-                        </button>
-                      ))}
+              <div className="composer-shell">
+                {replyTarget ? (
+                  <div className="composer-context">
+                    <Reply size={17} />
+                    <div>
+                      <strong>
+                        Replying to {getSenderName(replyTarget.sender, "message")}
+                      </strong>
+                      <span>
+                        {getReplyPreview(replyTarget, fallbackMessageView(replyTarget))}
+                      </span>
                     </div>
-                  ) : null}
-                </div>
-                <input
-                  value={messageDraft}
-                  onChange={handleDraftChange}
-                  placeholder="Message"
-                  aria-label="Message"
-                />
-                <button className="send-button" type="submit" aria-label="Send message" title="Send message">
-                  <Send size={20} />
-                </button>
-              </form>
+                    <button
+                      className="icon-button subtle"
+                      type="button"
+                      title="Cancel reply"
+                      aria-label="Cancel reply"
+                      onClick={() => setReplyTarget(null)}
+                    >
+                      <X />
+                    </button>
+                  </div>
+                ) : null}
+
+                {editingMessage ? (
+                  <div className="composer-context edit">
+                    <Edit3 size={17} />
+                    <div>
+                      <strong>Editing message</strong>
+                      <span>{getReplyPreview(editingMessage, fallbackMessageView(editingMessage))}</span>
+                    </div>
+                    <button
+                      className="icon-button subtle"
+                      type="button"
+                      title="Cancel edit"
+                      aria-label="Cancel edit"
+                      onClick={clearComposer}
+                    >
+                      <X />
+                    </button>
+                  </div>
+                ) : null}
+
+                {fileDraft ? (
+                  <div className="file-draft">
+                    <div className="file-draft-icon">
+                      {fileDraft.mimeType.startsWith("image/") ? <ImageIcon /> : <FileIcon />}
+                    </div>
+                    <div>
+                      <strong>{fileDraft.fileName}</strong>
+                      <span>{formatFileSize(fileDraft.size)}</span>
+                    </div>
+                    <button
+                      className="icon-button subtle"
+                      type="button"
+                      title="Remove file"
+                      aria-label="Remove file"
+                      onClick={() => setFileDraft(null)}
+                    >
+                      <X />
+                    </button>
+                  </div>
+                ) : null}
+
+                <form className="composer" onSubmit={sendMessage}>
+                  <div className="emoji-wrap">
+                    <button
+                      className="icon-button"
+                      type="button"
+                      title="Add emoji"
+                      aria-label="Add emoji"
+                      onClick={() => setShowEmojiPicker((current) => !current)}
+                    >
+                      <Smile />
+                    </button>
+                    {showEmojiPicker ? (
+                      <div className="emoji-picker">
+                        {EMOJI_OPTIONS.map((emoji) => (
+                          <button type="button" key={emoji} onClick={() => addEmoji(emoji)}>
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button
+                    className="icon-button composer-tool"
+                    type="button"
+                    title="Attach file"
+                    aria-label="Attach file"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={Boolean(editingMessage)}
+                  >
+                    <Paperclip />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    className="file-input"
+                    type="file"
+                    accept="image/*,.pdf,.txt,.csv,.json,.md,.doc,.docx"
+                    onChange={handleFileSelect}
+                  />
+                  <input
+                    value={messageDraft}
+                    onChange={handleDraftChange}
+                    placeholder={editingMessage ? "Edit message" : "Message"}
+                    aria-label="Message"
+                  />
+                  <button
+                    className="send-button"
+                    type="submit"
+                    aria-label="Send message"
+                    title="Send message"
+                    disabled={actionLoading === "send-message"}
+                  >
+                    {actionLoading === "send-message" ? <Loader2 className="spin" size={20} /> : <Send size={20} />}
+                  </button>
+                </form>
+              </div>
             </>
           ) : (
             <div className="no-chat">
@@ -927,7 +1331,18 @@ export default function App() {
   );
 }
 
-function AuthScreen({ mode, pendingInviteCode, loading, onModeChange, onSubmit }) {
+function AuthScreen({
+  mode,
+  pendingInviteCode,
+  otpChallenge,
+  loading,
+  resendLoading,
+  onModeChange,
+  onSubmit,
+  onVerifyOtp,
+  onResendOtp,
+  onCancelOtp,
+}) {
   return (
     <main className="auth-page">
       <section className="auth-brand">
@@ -948,72 +1363,114 @@ function AuthScreen({ mode, pendingInviteCode, loading, onModeChange, onSubmit }
       </section>
 
       <section className="auth-panel">
-        <div className="auth-tabs" role="tablist" aria-label="Authentication">
-          <button
-            type="button"
-            className={mode === "login" ? "active" : ""}
-            onClick={() => onModeChange("login")}
-          >
-            Login
-          </button>
-          <button
-            type="button"
-            className={mode === "register" ? "active" : ""}
-            onClick={() => onModeChange("register")}
-          >
-            Register
-          </button>
-        </div>
-
-        {pendingInviteCode ? (
-          <div className="pending-invite">
-            <LinkIcon size={16} />
-            <span>{pendingInviteCode}</span>
-          </div>
-        ) : null}
-
-        <form className="auth-form" onSubmit={onSubmit}>
-          {mode === "register" ? (
+        {otpChallenge ? (
+          <form className="auth-form" onSubmit={onVerifyOtp}>
+            <div className="pending-invite">
+              <ShieldCheck size={16} />
+              <span>{otpChallenge.email}</span>
+            </div>
             <label>
-              Username
-              <input name="username" required minLength={2} autoComplete="username" />
+              OTP
+              <input
+                name="otp"
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                required
+                autoComplete="one-time-code"
+                autoFocus
+              />
             </label>
-          ) : null}
-          <label>
-            Email
-            <input name="email" type="email" required autoComplete="email" />
-          </label>
-          <label>
-            Password
-            <input
-              name="password"
-              type="password"
-              required
-              minLength={6}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-            />
-          </label>
-          <button className="primary-button wide" type="submit" disabled={loading}>
-            {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
-            {mode === "login" ? "Login" : "Create Account"}
-          </button>
-        </form>
+            <button className="primary-button wide" type="submit" disabled={loading}>
+              {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+              Verify Account
+            </button>
+            <div className="auth-inline-actions">
+              <button className="secondary-button" type="button" onClick={onResendOtp} disabled={resendLoading}>
+                {resendLoading ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+                Resend OTP
+              </button>
+              <button className="secondary-button" type="button" onClick={onCancelOtp}>
+                Back
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="auth-tabs" role="tablist" aria-label="Authentication">
+              <button
+                type="button"
+                className={mode === "login" ? "active" : ""}
+                onClick={() => onModeChange("login")}
+              >
+                Login
+              </button>
+              <button
+                type="button"
+                className={mode === "register" ? "active" : ""}
+                onClick={() => onModeChange("register")}
+              >
+                Register
+              </button>
+            </div>
+
+            {pendingInviteCode ? (
+              <div className="pending-invite">
+                <LinkIcon size={16} />
+                <span>{pendingInviteCode}</span>
+              </div>
+            ) : null}
+
+            <form className="auth-form" onSubmit={onSubmit}>
+              {mode === "register" ? (
+                <label>
+                  Username
+                  <input name="username" required minLength={2} autoComplete="username" />
+                </label>
+              ) : null}
+              <label>
+                Email
+                <input name="email" type="email" required autoComplete="email" />
+              </label>
+              <label>
+                Password
+                <input
+                  name="password"
+                  type="password"
+                  required
+                  minLength={6}
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                />
+              </label>
+              <button className="primary-button wide" type="submit" disabled={loading}>
+                {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+                {mode === "login" ? "Login" : "Send OTP"}
+              </button>
+            </form>
+          </>
+        )}
       </section>
     </main>
   );
 }
 
-function MessageBubble({ message, user, onReact }) {
+function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
   const sender = message.sender;
   const senderId = getEntityId(sender);
   const userId = getEntityId(user);
   const isOwn = senderId === userId;
-  const senderName =
-    typeof sender === "object" && sender
-      ? sender.username || sender.email || "Unknown"
-      : isOwn
-        ? user?.username || user?.email
-        : "Unknown";
+  const senderName = getSenderName(
+    sender,
+    isOwn ? user?.username || user?.email || "You" : "Unknown",
+  );
+  const display = fallbackMessageView(message);
+  const canManage = isOwn && !message.isDeleted;
+  const hasAttachment = hasUsableAttachment(message.attachment);
+  const showMessageText =
+    display.content &&
+    (!hasAttachment ||
+      message.isDeleted ||
+      display.content !== message.attachment.fileName);
   const groupedReactions = (message.reactions || []).reduce((acc, reaction) => {
     if (!acc[reaction.emoji]) {
       acc[reaction.emoji] = [];
@@ -1026,9 +1483,27 @@ function MessageBubble({ message, user, onReact }) {
   return (
     <article className={`message-bubble ${isOwn ? "own" : ""}`}>
       {!isOwn ? <span className="message-sender">{senderName}</span> : null}
-      <p>{message.content}</p>
-      <time>{formatMessageTime(message.createdAt)}</time>
-      {Object.keys(groupedReactions).length > 0 ? (
+      {display.reply ? (
+        <div className={`message-reply-preview ${display.reply.locked || display.reply.failed ? "locked" : ""}`}>
+          <strong>{display.reply.senderName}</strong>
+          <span>{display.reply.content}</span>
+        </div>
+      ) : null}
+      <MessageAttachment
+        attachment={message.attachment}
+        dataUrl={display.attachmentDataUrl}
+        messageType={message.messageType}
+      />
+      {showMessageText ? (
+        <p className={message.isDeleted ? "deleted-text" : display.locked || display.failed ? "locked-text" : ""}>
+          {display.content}
+        </p>
+      ) : null}
+      <div className="message-meta">
+        {message.isEdited && !message.isDeleted ? <span>edited</span> : null}
+        <time>{formatMessageTime(message.createdAt)}</time>
+      </div>
+      {!message.isDeleted && Object.keys(groupedReactions).length > 0 ? (
         <div className="reaction-row">
           {Object.entries(groupedReactions).map(([emoji, users]) => {
             const reactedByMe = users.some((reactionUser) => getEntityId(reactionUser) === userId);
@@ -1046,14 +1521,71 @@ function MessageBubble({ message, user, onReact }) {
           })}
         </div>
       ) : null}
-      <div className="quick-reactions" aria-label="React to message">
-        {REACTION_OPTIONS.map((emoji) => (
-          <button type="button" key={emoji} onClick={() => onReact(message._id, emoji)}>
-            {emoji}
-          </button>
-        ))}
-      </div>
+      {!message.isDeleted ? (
+        <div className="quick-reactions" aria-label="Message actions">
+          <div className="reaction-buttons">
+            {REACTION_OPTIONS.map((emoji) => (
+              <button type="button" key={emoji} onClick={() => onReact(message._id, emoji)}>
+                {emoji}
+              </button>
+            ))}
+          </div>
+          <div className="message-tools">
+            <button type="button" title="Reply" aria-label="Reply" onClick={() => onReply(message)}>
+              <Reply size={14} />
+            </button>
+            {canManage && message.messageType === "text" ? (
+              <button type="button" title="Edit" aria-label="Edit" onClick={() => onEdit(message)}>
+                <Edit3 size={14} />
+              </button>
+            ) : null}
+            {canManage ? (
+              <button type="button" title="Delete" aria-label="Delete" onClick={() => onDelete(message)}>
+                <Trash2 size={14} />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </article>
+  );
+}
+
+function MessageAttachment({ attachment, dataUrl, messageType }) {
+  if (!hasUsableAttachment(attachment)) return null;
+
+  const title = attachment.fileName || "Attachment";
+  const isImage = messageType === "image" && dataUrl?.startsWith("data:image/");
+
+  if (!dataUrl) {
+    return (
+      <div className="attachment-card muted">
+        <FileIcon size={18} />
+        <div>
+          <strong>{title}</strong>
+          <span>{attachment.size ? formatFileSize(attachment.size) : "File"}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isImage) {
+    return (
+      <a className="image-attachment" href={dataUrl} download={title}>
+        <img src={dataUrl} alt={title} />
+      </a>
+    );
+  }
+
+  return (
+    <a className="attachment-card" href={dataUrl} download={title}>
+      <FileIcon size={18} />
+      <div>
+        <strong>{title}</strong>
+        <span>{formatFileSize(attachment.size)}</span>
+      </div>
+      <Download size={17} />
+    </a>
   );
 }
 

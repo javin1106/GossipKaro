@@ -1,5 +1,25 @@
 import mongoose from "mongoose";
 
+const attachmentSchema = new mongoose.Schema(
+  {
+    fileName: {
+      type: String,
+      trim: true,
+    },
+    mimeType: {
+      type: String,
+      trim: true,
+    },
+    size: {
+      type: Number,
+    },
+    dataUrl: {
+      type: String,
+    },
+  },
+  { _id: false },
+);
+
 const messageSchema = new mongoose.Schema(
   {
     group: {
@@ -29,6 +49,35 @@ const messageSchema = new mongoose.Schema(
       default: "text",
     },
 
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
+    attachment: {
+      type: attachmentSchema,
+      default: undefined,
+    },
+
+    isEdited: {
+      type: Boolean,
+      default: false,
+    },
+
+    editedAt: {
+      type: Date,
+    },
+
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+
+    deletedAt: {
+      type: Date,
+    },
+
     reactions: [
       {
         emoji: {
@@ -49,5 +98,7 @@ const messageSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+messageSchema.index({ group: 1, createdAt: -1 });
 
 export default mongoose.model("Message", messageSchema);

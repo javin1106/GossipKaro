@@ -62,7 +62,16 @@ export const getMessages = asyncHandler(async (req, res) => {
     .skip(skip)
     .limit(limit)
     .populate("sender", "username email")
-    .populate("reactions.user", "username email");
+    .populate("reactions.user", "username email")
+    .populate({
+      path: "replyTo",
+      select:
+        "content sender messageType attachment isDeleted createdAt",
+      populate: {
+        path: "sender",
+        select: "username email",
+      },
+    });
 
   const totalMessages = await Message.countDocuments({ group: groupId });
 

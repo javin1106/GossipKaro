@@ -9,12 +9,14 @@ const connectRedis = async (io) => {
     return {
       enabled: false,
       presenceClient: null,
+      otpClient: null,
     };
   }
 
   const pubClient = createClient({ url: redisUrl });
   const subClient = pubClient.duplicate();
   const presenceClient = pubClient.duplicate();
+  const otpClient = pubClient.duplicate();
 
   const onError = (label) => (error) => {
     console.error(`${label} Redis error:`, error.message);
@@ -23,15 +25,22 @@ const connectRedis = async (io) => {
   pubClient.on("error", onError("Pub"));
   subClient.on("error", onError("Sub"));
   presenceClient.on("error", onError("Presence"));
+  otpClient.on("error", onError("OTP"));
 
   try {
-    await Promise.all([pubClient.connect(), subClient.connect(), presenceClient.connect()]);
+    await Promise.all([
+      pubClient.connect(),
+      subClient.connect(),
+      presenceClient.connect(),
+      otpClient.connect(),
+    ]);
     io.adapter(createAdapter(pubClient, subClient));
     console.log("Redis connected. Socket.IO Redis adapter enabled.");
 
     return {
       enabled: true,
       presenceClient,
+      otpClient,
     };
   } catch (error) {
     if (process.env.REDIS_REQUIRED === "true") {
@@ -46,11 +55,13 @@ const connectRedis = async (io) => {
       pubClient.quit(),
       subClient.quit(),
       presenceClient.quit(),
+      otpClient.quit(),
     ]);
 
     return {
       enabled: false,
       presenceClient: null,
+      otpClient: null,
     };
   }
 };

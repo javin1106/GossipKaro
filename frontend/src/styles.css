@@ -193,6 +193,12 @@ button:disabled {
   gap: 16px;
 }
 
+.auth-inline-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
 label {
   display: grid;
   gap: 8px;
@@ -290,6 +296,12 @@ input:focus {
   color: #ffffff;
   background: var(--coral);
   border-color: var(--coral);
+}
+
+.icon-button.subtle {
+  color: #54656f;
+  background: transparent;
+  border-color: transparent;
 }
 
 .app-shell {
@@ -584,6 +596,114 @@ input:focus {
   font-weight: 900;
 }
 
+.message-reply-preview {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 100%;
+  padding: 7px 9px;
+  background: rgba(0, 168, 132, 0.08);
+  border-left: 3px solid var(--mint);
+  border-radius: 6px;
+}
+
+.message-reply-preview strong,
+.message-reply-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-reply-preview strong {
+  color: var(--mint-strong);
+  font-size: 0.78rem;
+}
+
+.message-reply-preview span {
+  color: #3b4a54;
+  font-size: 0.82rem;
+}
+
+.message-reply-preview.locked {
+  border-left-color: #8696a0;
+  background: rgba(134, 150, 160, 0.12);
+}
+
+.message-meta {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.message-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.deleted-text,
+.locked-text {
+  color: #667781;
+  font-style: italic;
+}
+
+.image-attachment {
+  display: block;
+  overflow: hidden;
+  width: min(320px, 64vw);
+  max-width: 100%;
+  background: rgba(17, 27, 33, 0.06);
+  border-radius: 7px;
+}
+
+.image-attachment img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+}
+
+.attachment-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: min(280px, 64vw);
+  max-width: 100%;
+  padding: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(17, 27, 33, 0.08);
+  border-radius: 7px;
+}
+
+.attachment-card.muted {
+  grid-template-columns: 32px minmax(0, 1fr);
+  color: #54656f;
+}
+
+.attachment-card div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-card strong,
+.attachment-card span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-card span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .reaction-row,
 .quick-reactions {
   display: flex;
@@ -637,9 +757,20 @@ input:focus {
 
 .message-bubble:hover .quick-reactions,
 .message-bubble:focus-within .quick-reactions {
-  max-height: 34px;
+  max-height: 74px;
   margin-top: 4px;
   opacity: 1;
+}
+
+.reaction-buttons,
+.message-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.message-tools {
+  padding-left: 3px;
 }
 
 .typing-line {
@@ -650,13 +781,16 @@ input:focus {
   font-style: italic;
 }
 
-.composer {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) 48px;
-  gap: 10px;
-  padding: 14px 18px 18px;
+.composer-shell {
   background: #f0f2f5;
   border-top: 1px solid #d1d7db;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 48px 48px minmax(0, 1fr) 48px;
+  gap: 10px;
+  padding: 10px 18px 14px;
 }
 
 .composer input {
@@ -683,6 +817,72 @@ input:focus {
   color: #54656f;
   background: transparent;
   border: 0;
+}
+
+.composer-tool {
+  width: 48px;
+  height: 48px;
+  color: #54656f;
+  background: transparent;
+  border: 0;
+}
+
+.file-input {
+  display: none;
+}
+
+.composer-context,
+.file-draft {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 40px;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 18px 0;
+  padding: 9px 10px;
+  color: #3b4a54;
+  background: #ffffff;
+  border-left: 4px solid var(--mint);
+  border-radius: 8px;
+}
+
+.composer-context.edit {
+  border-left-color: var(--sky);
+}
+
+.composer-context div,
+.file-draft div:not(.file-draft-icon) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.composer-context strong,
+.composer-context span,
+.file-draft strong,
+.file-draft span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-context strong,
+.file-draft strong {
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+.composer-context span,
+.file-draft span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.file-draft-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--mint-strong);
 }
 
 .emoji-picker {
@@ -941,7 +1141,7 @@ input:focus {
   }
 
   .quick-reactions {
-    max-height: 34px;
+    max-height: 74px;
     margin-top: 4px;
     opacity: 1;
   }
@@ -1003,11 +1203,20 @@ input:focus {
     padding: 12px;
   }
 
+  .composer-context,
+  .file-draft {
+    margin: 8px 12px 0;
+  }
+
   .modal-actions {
     flex-direction: column-reverse;
   }
 
   .modal-actions button {
     width: 100%;
+  }
+
+  .auth-inline-actions {
+    grid-template-columns: 1fr;
   }
 }

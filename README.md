@@ -12,12 +12,16 @@ It is not deployed yet. Run it locally with the commands below.
 ## Features
 
 - Register and login with JWT auth
+- Verify new accounts with Redis-backed OTP
 - Create chat groups
 - Join groups using invite codes or invite links
 - WhatsApp-inspired responsive chat UI
 - View your groups and active group details
 - View all members in a group
 - Send and receive messages in real time with Socket.IO
+- Reply to specific messages
+- Edit and soft-delete your own messages
+- Share images and small files up to 2MB
 - Typing indicators
 - Online presence per group
 - Unread message badges
@@ -108,14 +112,26 @@ REFRESH_TOKEN_EXPIRY=10d
 
 CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
 
+# Required for OTP email delivery
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=javin.chutani@gmail.com
+SMTP_PASS=your_google_app_password
+SMTP_FROM=GossipKaro <javin.chutani@gmail.com>
+
 # Optional. Enable when running more than one backend instance.
 REDIS_URL=redis://localhost:6379
 REDIS_REQUIRED=false
+
+# Optional OTP tuning
+OTP_SECRET=your_otp_hmac_secret
+OTP_TTL_SECONDS=600
+OTP_MAX_ATTEMPTS=5
 ```
 
 Important MongoDB note: include the database name in the URI, for example `/gossipkaro`. If you omit it, MongoDB may use the default `test` database.
 
-Redis is optional for local development. Without `REDIS_URL`, the app runs in single-instance mode. With `REDIS_URL`, Socket.IO uses Redis pub/sub so events reach users connected to other backend instances.
+Redis is optional for local development. Without `REDIS_URL`, the app runs in single-instance mode and OTPs use an in-memory fallback. SMTP is still required to deliver OTPs by email. With `REDIS_URL`, Socket.IO uses Redis pub/sub so events reach users connected to other backend instances, presence uses Redis sets, and registration OTPs use Redis TTL keys.
 
 ### 3. Run the App
 
@@ -170,6 +186,8 @@ npm --prefix frontend run preview
 
 ```text
 POST /api/auth/register
+POST /api/auth/verify-otp
+POST /api/auth/resend-otp
 POST /api/auth/login
 POST /api/auth/refresh
 GET  /api/auth/me
@@ -220,7 +238,9 @@ const socket = io("http://localhost:5000", {
 | Event | Payload | Description |
 | --- | --- | --- |
 | `join-group` | `groupId` | Join a group room |
-| `send-message` | `{ groupId, content }` | Send a group message |
+| `send-message` | `{ groupId, content, replyTo?, messageType?, attachment? }` | Send a text, reply, image, or file message |
+| `edit-message` | `{ groupId, messageId, content }` | Edit your own text message |
+| `delete-message` | `{ groupId, messageId }` | Soft-delete your own message |
 | `react-message` | `{ groupId, messageId, emoji }` | Toggle a reaction on a message |
 | `mark-read` | `{ groupId }` | Mark a group as read for unread counts |
 | `typing` | `{ groupId }` | Notify other users that you are typing |
@@ -231,6 +251,8 @@ const socket = io("http://localhost:5000", {
 | Event | Payload | Description |
 | --- | --- | --- |
 | `new-message` | `message` | Receive a new message |
+| `message-updated` | `message` | Sync an edited message |
+| `message-deleted` | `{ groupId, messageId }` | Sync a soft-deleted message |
 | `message-reaction-updated` | `{ groupId, messageId, reactions }` | Sync message reactions |
 | `unread-count-updated` | `{ groupId, unreadCount }` | Sync unread count after read state changes |
 | `online-users` | `{ groupId, userIds }` | Initial online users for a group |
@@ -242,16 +264,31 @@ const socket = io("http://localhost:5000", {
 
 ## Current Frontend Flow
 
-1. User registers or logs in.
-2. Access token and user profile are stored in local storage.
-3. Frontend connects to Socket.IO using the access token.
-4. User can create a group or join with an invite code.
-5. Selecting a group fetches fresh group details and recent messages.
-6. Messages are sent and received through Socket.IO.
-7. Inactive groups show unread badges until opened.
-8. Online presence is tracked from active socket connections.
-9. Users can add emojis to messages and react to existing messages.
-10. The Members button shows the current group members and admins.
+1. User registers with username, email, and password.
+2. Backend creates an unverified account and stores a hashed OTP in Redis with TTL.
+3. User verifies the OTP, then the backend marks the account verified and issues JWT tokens.
+4. Access token and user profile are stored in local storage.
+5. Frontend connects to Socket.IO using the access token.
+6. User can create a group or join with an invite code.
+7. Selecting a group fetches fresh group details and recent messages.
+8. Messages are sent and received through Socket.IO.
+9. Users can reply to messages, react with emojis, edit their own text messages, and soft-delete their own messages.
+10. Image/file attachments are read in the browser as data URLs, validated, sent through Socket.IO, and persisted with the message.
+11. Inactive groups show unread badges until opened.
+12. Online presence is tracked from active socket connections.
+13. The Members button shows the current group members and admins.
+
+## OTP Verification Flow
+
+GossipKaro uses Redis for temporary registration OTP state:
+
+1. `POST /api/auth/register` creates or updates an unverified account.
+2. Backend generates a 6-digit OTP and stores only an HMAC hash in Redis.
+3. Redis stores the OTP key with a TTL, defaulting to 10 minutes.
+4. `POST /api/auth/verify-otp` compares the submitted OTP hash, deletes it on success, verifies the user, and returns JWT tokens.
+5. `POST /api/auth/resend-otp` replaces the old OTP with a fresh one and resets the TTL.
+
+For local development without `REDIS_URL`, the OTP store falls back to in-memory storage, but OTP delivery still happens through the configured SMTP account. The OTP is never returned in the API response or shown in the UI.
 
 ## Scaling Flow
 
@@ -283,7 +320,7 @@ When `REDIS_URL` is configured:
 - Other servers receive that event and forward it to their connected sockets.
 - Online presence is stored in Redis sets instead of only local memory.
 
-MongoDB remains the source of truth for users, groups, messages, reactions, and read receipts. Redis is used for ephemeral real-time coordination, not permanent chat history.
+MongoDB remains the source of truth for users, groups, messages, reactions, and read receipts. Redis is used for ephemeral real-time coordination, online presence, and short-lived OTP verification state, not permanent chat history.
 
 Production note: when scaling Socket.IO behind a load balancer, use sticky sessions for long-polling or force WebSocket transport. The Redis adapter synchronizes events across servers, but connection routing still needs to be handled correctly.
 
