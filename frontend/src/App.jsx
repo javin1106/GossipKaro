@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Avatar,
+  Button,
+  Chip,
+  Input,
+  Label,
+  Modal as HeroModal,
+  Surface,
+  Tabs,
+  TextField,
+  Tooltip,
+} from "@heroui/react";
+import {
   Check,
   Copy,
   Download,
@@ -32,10 +44,12 @@ import {
   getInitials,
   normalizeUser,
 } from "./lib/format.js";
+import { reducePresenceEvent } from "./lib/presence.js";
 
 const TOKEN_KEY = "gossipkaro.token";
 const USER_KEY = "gossipkaro.user";
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const TYPING_EMIT_INTERVAL_MS = 1500;
 const EMOJI_OPTIONS = ["😀", "😂", "😍", "🔥", "👏", "🙏", "💯", "🎉", "❤️", "👍", "😎", "🤝"];
 const REACTION_OPTIONS = ["👍", "❤️", "😂", "🔥", "👏", "😮"];
 
@@ -45,6 +59,27 @@ function getSenderName(sender, fallback = "Unknown") {
   }
 
   return fallback;
+}
+
+function AppAvatar({ name, className = "", color = "default", size = "md" }) {
+  return (
+    <Avatar className={className} color={color} size={size}>
+      <Avatar.Fallback>{getInitials(name)}</Avatar.Fallback>
+    </Avatar>
+  );
+}
+
+function IconAction({ label, children, placement = "top", ...buttonProps }) {
+  return (
+    <Tooltip delay={350} closeDelay={100}>
+      <Button {...buttonProps} isIconOnly aria-label={label}>
+        {children}
+      </Button>
+      <Tooltip.Content placement={placement} showArrow>
+        {label}
+      </Tooltip.Content>
+    </Tooltip>
+  );
 }
 
 function formatFileSize(size = 0) {
@@ -158,8 +193,10 @@ export default function App() {
   const activeGroupRef = useRef("");
   const messageLoadRef = useRef("");
   const typingTimerRef = useRef(null);
+  const lastTypingEmitRef = useRef(0);
   const autoJoinRef = useRef(false);
   const fileInputRef = useRef(null);
+  const presenceStateRef = useRef({});
 
   const activeGroup = useMemo(
     () => groups.find((group) => group._id === activeGroupId),
@@ -226,6 +263,9 @@ export default function App() {
   useEffect(() => {
     if (!auth.token) return undefined;
 
+    presenceStateRef.current = {};
+    setOnlineUsersByGroup({});
+
     const socket = io(SOCKET_URL, {
       auth: { token: auth.token },
       withCredentials: true,
@@ -235,7 +275,11 @@ export default function App() {
     setConnectionState("connecting");
 
     socket.on("connect", () => setConnectionState("online"));
-    socket.on("disconnect", () => setConnectionState("offline"));
+    socket.on("disconnect", () => {
+      setConnectionState("offline");
+      presenceStateRef.current = {};
+      setOnlineUsersByGroup({});
+    });
     socket.on("connect_error", (error) => {
       setConnectionState("offline");
       showNotice(error.message || "Socket connection failed", "error");
@@ -328,32 +372,66 @@ export default function App() {
       );
     });
 
-    socket.on("online-users", ({ groupId, userIds }) => {
-      setOnlineUsersByGroup((current) => ({
-        ...current,
-        [groupId]: userIds || [],
+    const applyPresenceEvent = (groupId, event) => {
+      if (!groupId) return;
+
+      const current = presenceStateRef.current[groupId] || {
+        userIds: [],
+        revision: 0,
+      };
+      const next = reducePresenceEvent(current, event);
+      if (next === current) return;
+
+      presenceStateRef.current[groupId] = next;
+      setOnlineUsersByGroup((groups) => ({
+        ...groups,
+        [groupId]: next.userIds,
       }));
-    });
+    };
 
-    socket.on("presence-updated", ({ groupId, userId, isOnline }) => {
-      setOnlineUsersByGroup((current) => {
-        const currentIds = current[groupId] || [];
-        const nextIds = isOnline
-          ? Array.from(new Set([...currentIds, userId]))
-          : currentIds.filter((id) => id !== userId);
-
-        return {
-          ...current,
-          [groupId]: nextIds,
-        };
+    socket.on("online-users", ({ groupId, userIds, revision }) => {
+      applyPresenceEvent(groupId, {
+        type: "snapshot",
+        userIds,
+        revision,
       });
     });
+
+    socket.on(
+      "presence-updated",
+      ({ groupId, userId, isOnline, revision }) => {
+        applyPresenceEvent(groupId, {
+          type: "delta",
+          userId,
+          isOnline,
+          revision,
+        });
+      },
+    );
 
     socket.on("group-members-updated", async ({ groupId }) => {
       await fetchGroups(auth.token);
 
       if (groupId === activeGroupRef.current) {
-        await fetchGroupDetails(groupId, auth.token);
+        const group = await fetchGroupDetails(groupId, auth.token);
+        const memberIds = new Set(
+          (group?.members || []).map((member) => getEntityId(member)),
+        );
+        const currentPresence = presenceStateRef.current[groupId];
+
+        if (currentPresence) {
+          const userIds = currentPresence.userIds.filter((id) =>
+            memberIds.has(id),
+          );
+          presenceStateRef.current[groupId] = {
+            ...currentPresence,
+            userIds,
+          };
+          setOnlineUsersByGroup((current) => ({
+            ...current,
+            [groupId]: userIds,
+          }));
+        }
       }
     });
 
@@ -459,6 +537,7 @@ export default function App() {
     setMessageDraft("");
     setTypingUsers({});
     setOnlineUsersByGroup({});
+    presenceStateRef.current = {};
     setShowEmojiPicker(false);
     setReplyTarget(null);
     setEditingMessage(null);
@@ -748,11 +827,18 @@ export default function App() {
         token: auth.token,
       });
 
+      const leftGroupId = activeGroupId;
       setActiveGroupId("");
       setMessages([]);
       setReplyTarget(null);
       setEditingMessage(null);
       setFileDraft(null);
+      delete presenceStateRef.current[leftGroupId];
+      setOnlineUsersByGroup((current) => {
+        const next = { ...current };
+        delete next[leftGroupId];
+        return next;
+      });
       await fetchGroups(auth.token);
       showNotice("Left group", "success");
     } catch (error) {
@@ -768,10 +854,16 @@ export default function App() {
 
     if (!activeGroupId || !socketRef.current?.connected) return;
 
-    socketRef.current.emit("typing", { groupId: activeGroupId });
+    const now = Date.now();
+    if (now - lastTypingEmitRef.current >= TYPING_EMIT_INTERVAL_MS) {
+      socketRef.current.emit("typing", { groupId: activeGroupId });
+      lastTypingEmitRef.current = now;
+    }
+
     window.clearTimeout(typingTimerRef.current);
     typingTimerRef.current = window.setTimeout(() => {
       socketRef.current?.emit("stop-typing", { groupId: activeGroupId });
+      lastTypingEmitRef.current = 0;
     }, 1100);
   }
 
@@ -949,33 +1041,44 @@ export default function App() {
         <aside className="sidebar">
           <div className="sidebar-header">
             <div className="user-lockup">
-              <div className="avatar">{getInitials(auth.user?.username || auth.user?.email)}</div>
+              <AppAvatar
+                className="profile-avatar"
+                color="default"
+                name={auth.user?.username || auth.user?.email}
+              />
               <div>
                 <p>{auth.user?.username || "GossipKaro"}</p>
-                <span>{connectionState}</span>
+                <Chip
+                  className="connection-chip"
+                  color={connectionState === "online" ? "success" : "warning"}
+                  size="sm"
+                  variant="soft"
+                >
+                  {connectionState}
+                </Chip>
               </div>
             </div>
-            <button
+            <IconAction
               className="icon-button danger"
               type="button"
-              title="Logout"
-              aria-label="Logout"
+              label="Logout"
+              variant="danger"
               onClick={handleLogout}
-              disabled={actionLoading === "logout"}
+              isDisabled={actionLoading === "logout"}
             >
               {actionLoading === "logout" ? <Loader2 className="spin" /> : <LogOut />}
-            </button>
+            </IconAction>
           </div>
 
           <div className="sidebar-actions">
-            <button className="primary-button" type="button" onClick={() => setModal("create")}>
+            <Button className="primary-button" type="button" variant="primary" onClick={() => setModal("create")}>
               <Plus size={18} />
               New Group
-            </button>
-            <button className="secondary-button" type="button" onClick={() => setModal("join")}>
+            </Button>
+            <Button className="secondary-button" type="button" variant="secondary" onClick={() => setModal("join")}>
               <UserPlus size={18} />
               Join
-            </button>
+            </Button>
           </div>
 
           <div className="section-label">
@@ -988,25 +1091,32 @@ export default function App() {
               <EmptyState icon={<Users />} title="No groups yet" text="Create or join a group." />
             ) : (
               groups.map((group) => (
-                <button
+                <Button
                   className={`group-row ${group._id === activeGroupId ? "active" : ""}`}
                   type="button"
+                  variant="tertiary"
                   key={group._id}
                   onClick={() => selectGroup(group._id)}
                 >
-                  <span className="group-avatar">{getInitials(group.groupName)}</span>
+                  <AppAvatar
+                    className="group-avatar"
+                    color={group._id === activeGroupId ? "success" : "accent"}
+                    name={group.groupName}
+                  />
                   <span className="group-main">
                     <strong>{group.groupName}</strong>
                     <small>{group.description || `${group.members?.length || 0} members`}</small>
                   </span>
                   <span className="group-meta">
                     {group.unreadCount > 0 ? (
-                      <span className="unread-badge">{group.unreadCount}</span>
+                      <Chip className="unread-badge" color="success" size="sm" variant="primary">
+                        {group.unreadCount}
+                      </Chip>
                     ) : (
                       <span className="group-date">{formatGroupDate(group.updatedAt)}</span>
                     )}
                   </span>
-                </button>
+                </Button>
               ))
             )}
           </div>
@@ -1017,7 +1127,12 @@ export default function App() {
             <>
               <header className="chat-header">
                 <div className="chat-title">
-                  <div className="group-avatar large">{getInitials(activeGroup.groupName)}</div>
+                  <AppAvatar
+                    className="group-avatar large"
+                    color="success"
+                    name={activeGroup.groupName}
+                    size="lg"
+                  />
                   <div>
                     <h1>{activeGroup.groupName}</h1>
                     <p>
@@ -1028,15 +1143,16 @@ export default function App() {
                 </div>
 
                 <div className="chat-actions">
-                  <button className="icon-text-button" type="button" onClick={() => setModal("members")}>
+                  <Button className="icon-text-button" type="button" variant="secondary" onClick={() => setModal("members")}>
                     <Users size={18} />
                     Members
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     className="icon-text-button"
                     type="button"
+                    variant="secondary"
                     onClick={generateInvite}
-                    disabled={actionLoading === "invite"}
+                    isDisabled={actionLoading === "invite"}
                   >
                     {actionLoading === "invite" ? (
                       <Loader2 className="spin" size={18} />
@@ -1044,17 +1160,18 @@ export default function App() {
                       <LinkIcon size={18} />
                     )}
                     Invite
-                  </button>
-                  <button
+                  </Button>
+                  <IconAction
                     className="icon-button danger"
                     type="button"
-                    title="Leave group"
-                    aria-label="Leave group"
+                    label="Leave group"
+                    placement="bottom"
+                    variant="danger"
                     onClick={leaveGroup}
-                    disabled={actionLoading === "leave"}
+                    isDisabled={actionLoading === "leave"}
                   >
                     {actionLoading === "leave" ? <Loader2 className="spin" /> : <DoorOpen />}
-                  </button>
+                  </IconAction>
                 </div>
               </header>
 
@@ -1094,15 +1211,15 @@ export default function App() {
                         {getReplyPreview(replyTarget, fallbackMessageView(replyTarget))}
                       </span>
                     </div>
-                    <button
+                    <IconAction
                       className="icon-button subtle"
                       type="button"
-                      title="Cancel reply"
-                      aria-label="Cancel reply"
+                      label="Cancel reply"
+                      variant="tertiary"
                       onClick={() => setReplyTarget(null)}
                     >
                       <X />
-                    </button>
+                    </IconAction>
                   </div>
                 ) : null}
 
@@ -1113,15 +1230,15 @@ export default function App() {
                       <strong>Editing message</strong>
                       <span>{getReplyPreview(editingMessage, fallbackMessageView(editingMessage))}</span>
                     </div>
-                    <button
+                    <IconAction
                       className="icon-button subtle"
                       type="button"
-                      title="Cancel edit"
-                      aria-label="Cancel edit"
+                      label="Cancel edit"
+                      variant="tertiary"
                       onClick={clearComposer}
                     >
                       <X />
-                    </button>
+                    </IconAction>
                   </div>
                 ) : null}
 
@@ -1134,49 +1251,57 @@ export default function App() {
                       <strong>{fileDraft.fileName}</strong>
                       <span>{formatFileSize(fileDraft.size)}</span>
                     </div>
-                    <button
+                    <IconAction
                       className="icon-button subtle"
                       type="button"
-                      title="Remove file"
-                      aria-label="Remove file"
+                      label="Remove file"
+                      variant="tertiary"
                       onClick={() => setFileDraft(null)}
                     >
                       <X />
-                    </button>
+                    </IconAction>
                   </div>
                 ) : null}
 
                 <form className="composer" onSubmit={sendMessage}>
                   <div className="emoji-wrap">
-                    <button
+                    <IconAction
                       className="icon-button"
                       type="button"
-                      title="Add emoji"
-                      aria-label="Add emoji"
+                      label="Add emoji"
+                      placement="top"
+                      variant="tertiary"
                       onClick={() => setShowEmojiPicker((current) => !current)}
                     >
                       <Smile />
-                    </button>
+                    </IconAction>
                     {showEmojiPicker ? (
                       <div className="emoji-picker">
                         {EMOJI_OPTIONS.map((emoji) => (
-                          <button type="button" key={emoji} onClick={() => addEmoji(emoji)}>
+                          <Button
+                            isIconOnly
+                            type="button"
+                            key={emoji}
+                            variant="tertiary"
+                            aria-label={`Add ${emoji}`}
+                            onClick={() => addEmoji(emoji)}
+                          >
                             {emoji}
-                          </button>
+                          </Button>
                         ))}
                       </div>
                     ) : null}
                   </div>
-                  <button
+                  <IconAction
                     className="icon-button composer-tool"
                     type="button"
-                    title="Attach file"
-                    aria-label="Attach file"
+                    label="Attach file"
+                    variant="tertiary"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={Boolean(editingMessage)}
+                    isDisabled={Boolean(editingMessage)}
                   >
                     <Paperclip />
-                  </button>
+                  </IconAction>
                   <input
                     ref={fileInputRef}
                     className="file-input"
@@ -1184,21 +1309,22 @@ export default function App() {
                     accept="image/*,.pdf,.txt,.csv,.json,.md,.doc,.docx"
                     onChange={handleFileSelect}
                   />
-                  <input
+                  <Input
+                    className="message-input"
                     value={messageDraft}
                     onChange={handleDraftChange}
                     placeholder={editingMessage ? "Edit message" : "Message"}
                     aria-label="Message"
                   />
-                  <button
+                  <IconAction
                     className="send-button"
                     type="submit"
-                    aria-label="Send message"
-                    title="Send message"
-                    disabled={actionLoading === "send-message"}
+                    label="Send message"
+                    variant="primary"
+                    isDisabled={actionLoading === "send-message"}
                   >
                     {actionLoading === "send-message" ? <Loader2 className="spin" size={20} /> : <Send size={20} />}
-                  </button>
+                  </IconAction>
                 </form>
               </div>
             </>
@@ -1215,86 +1341,96 @@ export default function App() {
       </main>
 
       {modal === "create" && (
-        <Modal title="New Group" onClose={() => setModal(null)}>
+        <AppModal title="New Group" onClose={() => setModal(null)}>
           <form className="modal-form" onSubmit={createGroup}>
-            <label>
-              Group name
-              <input name="groupName" required maxLength={50} autoFocus />
-            </label>
-            <label>
-              Description
-              <input name="description" maxLength={200} />
-            </label>
+            <TextField fullWidth isRequired name="groupName">
+              <Label>Group name</Label>
+              <Input autoFocus maxLength={50} placeholder="Weekend plans" />
+            </TextField>
+            <TextField fullWidth name="description">
+              <Label>Description</Label>
+              <Input maxLength={200} placeholder="What is this group about?" />
+            </TextField>
             <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={() => setModal(null)}>
+              <Button className="secondary-button" type="button" variant="secondary" onClick={() => setModal(null)}>
                 Cancel
-              </button>
-              <button className="primary-button" type="submit" disabled={actionLoading === "create-group"}>
+              </Button>
+              <Button
+                className="primary-button"
+                type="submit"
+                variant="primary"
+                isDisabled={actionLoading === "create-group"}
+              >
                 {actionLoading === "create-group" ? <Loader2 className="spin" size={18} /> : <Plus size={18} />}
                 Create
-              </button>
+              </Button>
             </div>
           </form>
-        </Modal>
+        </AppModal>
       )}
 
       {modal === "join" && (
-        <Modal title="Join Group" onClose={() => setModal(null)}>
+        <AppModal title="Join Group" onClose={() => setModal(null)}>
           <form className="modal-form" onSubmit={joinGroup}>
-            <label>
-              Invite code
-              <input name="inviteCode" required autoFocus defaultValue={pendingInviteCode} />
-            </label>
+            <TextField defaultValue={pendingInviteCode} fullWidth isRequired name="inviteCode">
+              <Label>Invite code</Label>
+              <Input autoFocus placeholder="Enter invite code" />
+            </TextField>
             <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={() => setModal(null)}>
+              <Button className="secondary-button" type="button" variant="secondary" onClick={() => setModal(null)}>
                 Cancel
-              </button>
-              <button className="primary-button" type="submit" disabled={actionLoading === "join-group"}>
+              </Button>
+              <Button
+                className="primary-button"
+                type="submit"
+                variant="primary"
+                isDisabled={actionLoading === "join-group"}
+              >
                 {actionLoading === "join-group" ? <Loader2 className="spin" size={18} /> : <UserPlus size={18} />}
                 Join
-              </button>
+              </Button>
             </div>
           </form>
-        </Modal>
+        </AppModal>
       )}
 
       {modal === "invite" && inviteResult && (
-        <Modal title="Invite" onClose={() => setModal(null)}>
+        <AppModal title="Invite" onClose={() => setModal(null)}>
           <div className="invite-box">
             <div>
               <span>Code</span>
               <strong>{inviteResult.code}</strong>
             </div>
-            <button
+            <IconAction
               className="icon-button"
               type="button"
-              title="Copy code"
-              aria-label="Copy code"
+              label="Copy code"
+              variant="tertiary"
               onClick={() => copyInvite(inviteResult.code)}
             >
               <Copy />
-            </button>
+            </IconAction>
           </div>
           <div className="invite-box">
             <div>
               <span>Link</span>
               <strong>{inviteResult.url}</strong>
             </div>
-            <button
+            <IconAction
               className="icon-button"
               type="button"
-              title="Copy link"
-              aria-label="Copy link"
+              label="Copy link"
+              variant="tertiary"
               onClick={() => copyInvite(inviteResult.url)}
             >
               <Copy />
-            </button>
+            </IconAction>
           </div>
-        </Modal>
+        </AppModal>
       )}
 
       {modal === "members" && activeGroup && (
-        <Modal title={`${activeGroup.groupName} Members`} onClose={() => setModal(null)}>
+        <AppModal title={`${activeGroup.groupName} Members`} onClose={() => setModal(null)}>
           <div className="member-list">
             {(activeGroup.members || []).map((member) => {
               const memberId = getEntityId(member);
@@ -1308,7 +1444,7 @@ export default function App() {
 
               return (
                 <div className="member-row" key={memberId || memberName}>
-                  <div className="avatar small">{getInitials(memberName)}</div>
+                  <AppAvatar className="member-avatar" name={memberName} size="sm" />
                   <div>
                     <strong>{memberName}</strong>
                     {typeof member === "object" && member?.email ? (
@@ -1318,12 +1454,12 @@ export default function App() {
                       </span>
                     ) : null}
                   </div>
-                  {isAdmin ? <span className="role-pill">Admin</span> : null}
+                  {isAdmin ? <Chip color="accent" size="sm" variant="soft">Admin</Chip> : null}
                 </div>
               );
             })}
           </div>
-        </Modal>
+        </AppModal>
       )}
 
       <Notice notice={notice} />
@@ -1362,95 +1498,109 @@ function AuthScreen({
         </div>
       </section>
 
-      <section className="auth-panel">
+      <Surface className="auth-panel">
         {otpChallenge ? (
           <form className="auth-form" onSubmit={onVerifyOtp}>
             <div className="pending-invite">
               <ShieldCheck size={16} />
               <span>{otpChallenge.email}</span>
             </div>
-            <label>
-              OTP
-              <input
-                name="otp"
-                inputMode="numeric"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                required
+            <TextField fullWidth isRequired name="otp">
+              <Label>Verification code</Label>
+              <Input
                 autoComplete="one-time-code"
                 autoFocus
+                inputMode="numeric"
+                maxLength={6}
+                pattern="[0-9]{6}"
+                placeholder="6-digit code"
               />
-            </label>
-            <button className="primary-button wide" type="submit" disabled={loading}>
+            </TextField>
+            <Button className="primary-button wide" type="submit" variant="primary" isDisabled={loading}>
               {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
               Verify Account
-            </button>
+            </Button>
             <div className="auth-inline-actions">
-              <button className="secondary-button" type="button" onClick={onResendOtp} disabled={resendLoading}>
+              <Button
+                className="secondary-button"
+                type="button"
+                variant="secondary"
+                onClick={onResendOtp}
+                isDisabled={resendLoading}
+              >
                 {resendLoading ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
                 Resend OTP
-              </button>
-              <button className="secondary-button" type="button" onClick={onCancelOtp}>
+              </Button>
+              <Button className="secondary-button" type="button" variant="secondary" onClick={onCancelOtp}>
                 Back
-              </button>
+              </Button>
             </div>
           </form>
         ) : (
           <>
-            <div className="auth-tabs" role="tablist" aria-label="Authentication">
-              <button
-                type="button"
-                className={mode === "login" ? "active" : ""}
-                onClick={() => onModeChange("login")}
-              >
-                Login
-              </button>
-              <button
-                type="button"
-                className={mode === "register" ? "active" : ""}
-                onClick={() => onModeChange("register")}
-              >
-                Register
-              </button>
-            </div>
-
             {pendingInviteCode ? (
               <div className="pending-invite">
                 <LinkIcon size={16} />
                 <span>{pendingInviteCode}</span>
               </div>
             ) : null}
-
-            <form className="auth-form" onSubmit={onSubmit}>
-              {mode === "register" ? (
-                <label>
-                  Username
-                  <input name="username" required minLength={2} autoComplete="username" />
-                </label>
-              ) : null}
-              <label>
-                Email
-                <input name="email" type="email" required autoComplete="email" />
-              </label>
-              <label>
-                Password
-                <input
-                  name="password"
-                  type="password"
-                  required
-                  minLength={6}
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                />
-              </label>
-              <button className="primary-button wide" type="submit" disabled={loading}>
-                {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
-                {mode === "login" ? "Login" : "Send OTP"}
-              </button>
-            </form>
+            <Tabs
+              className="auth-tabs"
+              selectedKey={mode}
+              onSelectionChange={(key) => onModeChange(String(key))}
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="Authentication">
+                  <Tabs.Tab id="login">
+                    Login
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="register">
+                    Register
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+              <Tabs.Panel id="login">
+                <CredentialsForm loading={loading} mode="login" onSubmit={onSubmit} />
+              </Tabs.Panel>
+              <Tabs.Panel id="register">
+                <CredentialsForm loading={loading} mode="register" onSubmit={onSubmit} />
+              </Tabs.Panel>
+            </Tabs>
           </>
         )}
-      </section>
+      </Surface>
     </main>
+  );
+}
+
+function CredentialsForm({ loading, mode, onSubmit }) {
+  return (
+    <form className="auth-form" onSubmit={onSubmit}>
+      {mode === "register" ? (
+        <TextField fullWidth isRequired name="username">
+          <Label>Username</Label>
+          <Input autoComplete="username" minLength={2} placeholder="Your display name" />
+        </TextField>
+      ) : null}
+      <TextField fullWidth isRequired name="email" type="email">
+        <Label>Email</Label>
+        <Input autoComplete="email" placeholder="you@example.com" />
+      </TextField>
+      <TextField fullWidth isRequired name="password" type="password">
+        <Label>Password</Label>
+        <Input
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          minLength={6}
+          placeholder="Minimum 6 characters"
+        />
+      </TextField>
+      <Button className="primary-button wide" type="submit" variant="primary" isDisabled={loading}>
+        {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+        {mode === "login" ? "Login" : "Send OTP"}
+      </Button>
+    </form>
   );
 }
 
@@ -1509,14 +1659,16 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
             const reactedByMe = users.some((reactionUser) => getEntityId(reactionUser) === userId);
 
             return (
-              <button
+              <Button
                 className={`reaction-chip ${reactedByMe ? "active" : ""}`}
                 type="button"
                 key={emoji}
+                size="sm"
+                variant={reactedByMe ? "secondary" : "tertiary"}
                 onClick={() => onReact(message._id, emoji)}
               >
                 {emoji} {users.length}
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -1525,24 +1677,54 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
         <div className="quick-reactions" aria-label="Message actions">
           <div className="reaction-buttons">
             {REACTION_OPTIONS.map((emoji) => (
-              <button type="button" key={emoji} onClick={() => onReact(message._id, emoji)}>
+              <Button
+                isIconOnly
+                className="quick-reaction-button"
+                type="button"
+                key={emoji}
+                size="sm"
+                variant="tertiary"
+                aria-label={`React with ${emoji}`}
+                onClick={() => onReact(message._id, emoji)}
+              >
                 {emoji}
-              </button>
+              </Button>
             ))}
           </div>
           <div className="message-tools">
-            <button type="button" title="Reply" aria-label="Reply" onClick={() => onReply(message)}>
+            <IconAction
+              className="message-tool"
+              type="button"
+              label="Reply"
+              size="sm"
+              variant="tertiary"
+              onClick={() => onReply(message)}
+            >
               <Reply size={14} />
-            </button>
+            </IconAction>
             {canManage && message.messageType === "text" ? (
-              <button type="button" title="Edit" aria-label="Edit" onClick={() => onEdit(message)}>
+              <IconAction
+                className="message-tool"
+                type="button"
+                label="Edit"
+                size="sm"
+                variant="tertiary"
+                onClick={() => onEdit(message)}
+              >
                 <Edit3 size={14} />
-              </button>
+              </IconAction>
             ) : null}
             {canManage ? (
-              <button type="button" title="Delete" aria-label="Delete" onClick={() => onDelete(message)}>
+              <IconAction
+                className="message-tool danger"
+                type="button"
+                label="Delete"
+                size="sm"
+                variant="danger-soft"
+                onClick={() => onDelete(message)}
+              >
                 <Trash2 size={14} />
-              </button>
+              </IconAction>
             ) : null}
           </div>
         </div>
@@ -1599,19 +1781,30 @@ function EmptyState({ icon, title, text }) {
   );
 }
 
-function Modal({ title, children, onClose }) {
+function AppModal({ title, children, onClose }) {
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <header>
-          <h2>{title}</h2>
-          <button className="icon-button" type="button" title="Close" aria-label="Close" onClick={onClose}>
-            <X />
-          </button>
-        </header>
-        {children}
-      </section>
-    </div>
+    <HeroModal>
+      <HeroModal.Backdrop
+        isOpen
+        isDismissable
+        variant="blur"
+        onOpenChange={(isOpen) => {
+          if (!isOpen) onClose();
+        }}
+      >
+        <HeroModal.Container placement="center" size="md">
+          <HeroModal.Dialog className="app-modal">
+            <HeroModal.CloseTrigger aria-label="Close dialog" onPress={onClose}>
+              <X size={18} />
+            </HeroModal.CloseTrigger>
+            <HeroModal.Header>
+              <HeroModal.Heading>{title}</HeroModal.Heading>
+            </HeroModal.Header>
+            <HeroModal.Body>{children}</HeroModal.Body>
+          </HeroModal.Dialog>
+        </HeroModal.Container>
+      </HeroModal.Backdrop>
+    </HeroModal>
   );
 }
 

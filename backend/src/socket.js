@@ -2,16 +2,54 @@ import jwt from "jsonwebtoken";
 import User from "./models/user.model.js";
 import Group from "./models/group.model.js";
 import Message from "./models/message.model.js";
+import {
+  getAuthorizedGroupSocketRoom,
+  getUserSocketRoom,
+} from "./utils/socketRooms.js";
 
 const USER_SOCKET_KEY_PREFIX = "gossipkaro:presence:user:";
+const GROUP_PRESENCE_REVISION_KEY_PREFIX = "gossipkaro:presence:revision:";
 const PRESENCE_TTL_SECONDS = 24 * 60 * 60;
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_CONTENT_LENGTH = 12000;
+const SOCKET_EVENT_LIMITS = {
+  joinGroup: { limit: 30, windowSeconds: 60 },
+  sendMessage: { limit: 30, windowSeconds: 10 },
+  messageMutation: { limit: 60, windowSeconds: 60 },
+  markRead: { limit: 120, windowSeconds: 60 },
+  typing: { limit: 20, windowSeconds: 10 },
+};
 
-const setupSocket = (io, { presenceClient } = {}) => {
+const setupSocket = (io, { presenceClient, rateLimiter } = {}) => {
   const onlineUsers = new Map();
+  const groupPresenceRevisions = new Map();
 
   const userSocketsKey = (userId) => `${USER_SOCKET_KEY_PREFIX}${userId}`;
+  const groupPresenceRevisionKey = (groupId) =>
+    `${GROUP_PRESENCE_REVISION_KEY_PREFIX}${groupId}`;
+
+  const getPresenceRevision = async (groupId) => {
+    if (presenceClient) {
+      const revision = await presenceClient.get(
+        groupPresenceRevisionKey(groupId),
+      );
+      return Number(revision) || 0;
+    }
+
+    return groupPresenceRevisions.get(groupId) || 0;
+  };
+
+  const bumpPresenceRevision = async (groupId) => {
+    if (presenceClient) {
+      return Number(
+        await presenceClient.incr(groupPresenceRevisionKey(groupId)),
+      );
+    }
+
+    const revision = (groupPresenceRevisions.get(groupId) || 0) + 1;
+    groupPresenceRevisions.set(groupId, revision);
+    return revision;
+  };
 
   const addOnlineUser = async (userId, socketId) => {
     if (presenceClient) {
@@ -69,6 +107,14 @@ const setupSocket = (io, { presenceClient } = {}) => {
     }
 
     return memberIds.filter((memberId) => onlineUsers.has(memberId));
+  };
+
+  const getPresenceSnapshot = async (groupId, members) => {
+    // Read the revision first. If presence changes while the snapshot is being
+    // assembled, the later delta has a higher revision and wins on the client.
+    const revision = await getPresenceRevision(groupId);
+    const userIds = await getOnlineUserIds(members);
+    return { groupId, userIds, revision };
   };
 
   const markGroupAsRead = async (groupId, userId) => {
@@ -182,6 +228,32 @@ const setupSocket = (io, { presenceClient } = {}) => {
     console.log("User connected:", socket.user.username);
     const userId = socket.user._id.toString();
     socket.joinedGroups = new Set();
+    socket.join(getUserSocketRoom(userId));
+
+    const allowSocketEvent = async (
+      scope,
+      { limit, windowSeconds },
+      { silent = false } = {},
+    ) => {
+      if (!rateLimiter) return true;
+
+      const result = await rateLimiter.consume({
+        scope: `socket:${scope}`,
+        identifier: userId,
+        limit,
+        windowSeconds,
+      });
+
+      if (!result.allowed && !silent) {
+        socket.emit("error", {
+          code: "RATE_LIMITED",
+          message: "Too many real-time actions. Please slow down",
+          retryAfterSeconds: result.retryAfterSeconds,
+        });
+      }
+
+      return result.allowed;
+    };
 
     const joinUserGroups = async () => {
       const becameOnline = await addOnlineUser(userId, socket.id);
@@ -189,21 +261,23 @@ const setupSocket = (io, { presenceClient } = {}) => {
 
       for (const group of groups) {
         const groupId = group._id.toString();
-        socket.join(groupId);
-        socket.joinedGroups.add(groupId);
 
         if (becameOnline) {
+          const revision = await bumpPresenceRevision(groupId);
           io.to(groupId).emit("presence-updated", {
             groupId,
             userId,
             isOnline: true,
+            revision,
           });
         }
 
-        socket.emit("online-users", {
-          groupId,
-          userIds: await getOnlineUserIds(group.members),
-        });
+        socket.emit(
+          "online-users",
+          await getPresenceSnapshot(groupId, group.members),
+        );
+        await socket.join(groupId);
+        socket.joinedGroups.add(groupId);
       }
     };
 
@@ -213,6 +287,15 @@ const setupSocket = (io, { presenceClient } = {}) => {
 
     socket.on("join-group", async (groupId) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "join-group",
+            SOCKET_EVENT_LIMITS.joinGroup,
+          ))
+        ) {
+          return;
+        }
+
         if (!groupId) {
           return socket.emit("error", { message: "Group ID is required" });
         }
@@ -230,12 +313,27 @@ const setupSocket = (io, { presenceClient } = {}) => {
           return socket.emit("error", { message: "Not a group member" });
         }
 
-        socket.join(groupId);
-        socket.joinedGroups.add(groupId);
-        socket.emit("online-users", {
-          groupId,
-          userIds: await getOnlineUserIds(group.members),
-        });
+        const normalizedGroupId = group._id.toString();
+        const wasJoined =
+          socket.joinedGroups.has(normalizedGroupId) &&
+          socket.rooms.has(normalizedGroupId);
+
+        if (!wasJoined) {
+          const revision = await bumpPresenceRevision(normalizedGroupId);
+          io.to(normalizedGroupId).emit("presence-updated", {
+            groupId: normalizedGroupId,
+            userId,
+            isOnline: true,
+            revision,
+          });
+        }
+
+        socket.emit(
+          "online-users",
+          await getPresenceSnapshot(normalizedGroupId, group.members),
+        );
+        await socket.join(normalizedGroupId);
+        socket.joinedGroups.add(normalizedGroupId);
       } catch (err) {
         socket.emit("error", { message: "Failed to join group" });
       }
@@ -249,8 +347,17 @@ const setupSocket = (io, { presenceClient } = {}) => {
         replyTo,
         messageType = "text",
         attachment,
-      }) => {
+      } = {}) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "send-message",
+            SOCKET_EVENT_LIMITS.sendMessage,
+          ))
+        ) {
+          return;
+        }
+
         const normalizedContent = typeof content === "string" ? content.trim() : "";
         if (!groupId || (!normalizedContent && !attachment)) {
           return socket.emit("error", {
@@ -302,8 +409,17 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("edit-message", async ({ groupId, messageId, content }) => {
+    socket.on("edit-message", async ({ groupId, messageId, content } = {}) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "message-mutation",
+            SOCKET_EVENT_LIMITS.messageMutation,
+          ))
+        ) {
+          return;
+        }
+
         const normalizedContent = typeof content === "string" ? content.trim() : "";
         if (!groupId || !messageId || !normalizedContent) {
           return socket.emit("error", { message: "Edit details are required" });
@@ -346,8 +462,17 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("delete-message", async ({ groupId, messageId }) => {
+    socket.on("delete-message", async ({ groupId, messageId } = {}) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "message-mutation",
+            SOCKET_EVENT_LIMITS.messageMutation,
+          ))
+        ) {
+          return;
+        }
+
         if (!groupId || !messageId) {
           return socket.emit("error", { message: "Delete details are required" });
         }
@@ -382,8 +507,18 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("mark-read", async ({ groupId }) => {
+    socket.on("mark-read", async ({ groupId } = {}) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "mark-read",
+            SOCKET_EVENT_LIMITS.markRead,
+            { silent: true },
+          ))
+        ) {
+          return;
+        }
+
         if (!groupId) return;
 
         const group = await markGroupAsRead(groupId, socket.user._id);
@@ -395,8 +530,17 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("react-message", async ({ groupId, messageId, emoji }) => {
+    socket.on("react-message", async ({ groupId, messageId, emoji } = {}) => {
       try {
+        if (
+          !(await allowSocketEvent(
+            "message-mutation",
+            SOCKET_EVENT_LIMITS.messageMutation,
+          ))
+        ) {
+          return;
+        }
+
         if (!groupId || !messageId || !emoji?.trim()) {
           return socket.emit("error", { message: "Reaction details are required" });
         }
@@ -451,15 +595,41 @@ const setupSocket = (io, { presenceClient } = {}) => {
       }
     });
 
-    socket.on("typing", ({ groupId }) => {
-      socket.to(groupId).emit("user-typing", {
+    socket.on("typing", async ({ groupId } = {}) => {
+      if (
+        !(await allowSocketEvent("typing", SOCKET_EVENT_LIMITS.typing, {
+          silent: true,
+        }))
+      ) {
+        return;
+      }
+
+      const authorizedGroupId = getAuthorizedGroupSocketRoom(socket, groupId);
+      if (!authorizedGroupId) {
+        return socket.emit("error", { message: "Not a group member" });
+      }
+
+      socket.to(authorizedGroupId).emit("user-typing", {
         username: socket.user.username || socket.user.email,
         userId: socket.user._id,
       });
     });
 
-    socket.on("stop-typing", ({ groupId }) => {
-      socket.to(groupId).emit("user-stopped-typing", {
+    socket.on("stop-typing", async ({ groupId } = {}) => {
+      if (
+        !(await allowSocketEvent("typing", SOCKET_EVENT_LIMITS.typing, {
+          silent: true,
+        }))
+      ) {
+        return;
+      }
+
+      const authorizedGroupId = getAuthorizedGroupSocketRoom(socket, groupId);
+      if (!authorizedGroupId) {
+        return socket.emit("error", { message: "Not a group member" });
+      }
+
+      socket.to(authorizedGroupId).emit("user-stopped-typing", {
         userId: socket.user._id,
       });
     });
@@ -469,10 +639,12 @@ const setupSocket = (io, { presenceClient } = {}) => {
         const wentOffline = await removeOnlineUser(userId, socket.id);
         if (wentOffline) {
           for (const groupId of socket.joinedGroups) {
+            const revision = await bumpPresenceRevision(groupId);
             io.to(groupId).emit("presence-updated", {
               groupId,
               userId,
               isOnline: false,
+              revision,
             });
           }
         }

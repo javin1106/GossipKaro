@@ -5,7 +5,7 @@ GossipKaro is a real-time group chat app with a React frontend, an Express backe
 The app is currently structured as two separate projects:
 
 - `backend/` - Express API, MongoDB models, JWT auth, Socket.IO server
-- `frontend/` - Vite + React chat UI
+- `frontend/` - Vite + React 19 chat UI built with HeroUI
 
 It is not deployed yet. Run it locally with the commands below.
 
@@ -13,9 +13,10 @@ It is not deployed yet. Run it locally with the commands below.
 
 - Register and login with JWT auth
 - Verify new accounts with Redis-backed OTP
+- Rate-limit authentication, invite creation, and real-time socket actions
 - Create chat groups
 - Join groups using invite codes or invite links
-- WhatsApp-inspired responsive chat UI
+- WhatsApp-inspired responsive chat UI with accessible HeroUI controls
 - View your groups and active group details
 - View all members in a group
 - Send and receive messages in real time with Socket.IO
@@ -34,8 +35,10 @@ It is not deployed yet. Run it locally with the commands below.
 
 ### Frontend
 
-- React 18
+- React 19
 - Vite
+- HeroUI 3
+- Tailwind CSS 4
 - Socket.IO Client
 - Lucide React icons
 
@@ -81,6 +84,7 @@ GossipKaro/
 │   └── package-lock.json
 ├── scripts/
 │   └── dev.js
+├── compose.yaml
 ├── .env
 ├── package.json
 └── README.md
@@ -103,6 +107,7 @@ Create or update `.env` in the project root:
 
 ```env
 PORT=5000
+NODE_ENV=development
 MONGO_URI=mongodb+srv://USERNAME:PASSWORD@HOST/gossipkaro?retryWrites=true&w=majority
 
 ACCESS_TOKEN_SECRET=your_access_token_secret
@@ -111,6 +116,9 @@ REFRESH_TOKEN_SECRET=your_refresh_token_secret
 REFRESH_TOKEN_EXPIRY=10d
 
 CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
+COOKIE_SAME_SITE=lax
+COOKIE_SECURE=false
+TRUST_PROXY=false
 
 # Required for OTP email delivery
 SMTP_HOST=smtp.gmail.com
@@ -133,7 +141,28 @@ Important MongoDB note: include the database name in the URI, for example `/goss
 
 Redis is optional for local development. Without `REDIS_URL`, the app runs in single-instance mode and OTPs use an in-memory fallback. SMTP is still required to deliver OTPs by email. With `REDIS_URL`, Socket.IO uses Redis pub/sub so events reach users connected to other backend instances, presence uses Redis sets, and registration OTPs use Redis TTL keys.
 
-### 3. Run the App
+Copy `.env.example` as the starting point for local or deployment configuration. In production:
+
+- Use different random values of at least 32 characters for `ACCESS_TOKEN_SECRET` and `REFRESH_TOKEN_SECRET`.
+- Set an exact comma-separated `CORS_ORIGIN`; wildcard origins are rejected.
+- Use `COOKIE_SAME_SITE=none` and `COOKIE_SECURE=true` when the frontend and backend are on different sites. Use `lax` when they are same-site.
+- Set `TRUST_PROXY=1` when the backend runs behind one trusted reverse proxy so IP-based limits use the real client address.
+- Set `REDIS_REQUIRED=true` for multiple backend instances.
+
+The backend validates these production requirements during startup and exits with a clear configuration error before accepting traffic.
+
+### 3. Start Redis
+
+With Docker Desktop running, start the local Redis service:
+
+```powershell
+docker compose up -d redis
+docker compose ps
+```
+
+Redis data is persisted in the `redis-data` Docker volume. Stop the service with `docker compose stop redis` when it is not needed.
+
+### 4. Run the App
 
 From the project root:
 
@@ -170,6 +199,7 @@ Backend scripts:
 ```text
 npm --prefix backend run dev
 npm --prefix backend start
+npm --prefix backend test
 ```
 
 Frontend scripts:
@@ -262,6 +292,16 @@ const socket = io("http://localhost:5000", {
 | `group-members-updated` | `{ groupId }` | Refresh group member details |
 | `error` | `{ message }` | Socket error message |
 
+## Security Controls
+
+- Authentication endpoints use IP/email-scoped fixed-window limits.
+- Invite creation is limited per authenticated user.
+- Socket.IO message, mutation, read, join, and typing events are throttled per user.
+- Redis shares rate-limit counters across backend instances; local development falls back to process memory.
+- Typing events are accepted only when the socket is currently authorized for the group room.
+- Access and refresh cookies are `httpOnly`, use deployment-configurable `SameSite` and `Secure` attributes, and are both cleared on logout.
+- Production startup rejects missing secrets, unsafe wildcard CORS, identical JWT secrets, and missing required Redis configuration.
+
 ## Current Frontend Flow
 
 1. User registers with username, email, and password.
@@ -319,6 +359,8 @@ When `REDIS_URL` is configured:
 - A room event emitted on one server is published through Redis.
 - Other servers receive that event and forward it to their connected sockets.
 - Online presence is stored in Redis sets instead of only local memory.
+- Presence snapshots and deltas use per-group revisions so stale events cannot overwrite newer online state.
+- HTTP and Socket.IO rate-limit counters are shared through Redis.
 
 MongoDB remains the source of truth for users, groups, messages, reactions, and read receipts. Redis is used for ephemeral real-time coordination, online presence, and short-lived OTP verification state, not permanent chat history.
 

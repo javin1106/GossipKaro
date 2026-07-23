@@ -2,13 +2,17 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import "./config/env.js";
-import { allowedOrigins } from "./config/env.js";
+import { allowedOrigins, trustProxy } from "./config/env.js";
 import authRoutes from "./routes/auth.routes.js";
 import groupRoutes from "./routes/group.routes.js";
 import inviteRoutes from "./routes/invite.routes.js";
 import messageRoutes from "./routes/message.routes.js";
 
 const app = express();
+
+if (trustProxy !== false) {
+  app.set("trust proxy", trustProxy);
+}
 
 const corsOptions = {
   credentials: true,
@@ -52,7 +56,10 @@ app.use((err, req, res, next) => {
   res.status(statusCode).json({
     statusCode,
     data: err.data ?? null,
-    message: err.message || "Something went wrong",
+    message:
+      statusCode >= 500 && process.env.NODE_ENV === "production"
+        ? "Something went wrong"
+        : err.message || "Something went wrong",
     success: false,
     errors: err.errors || [],
   });

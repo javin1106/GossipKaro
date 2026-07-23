@@ -3,6 +3,7 @@ import Message from "../models/message.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
+import { getUserSocketRoom } from "../utils/socketRooms.js";
 
 export const createGroup = asyncHandler(async (req, res) => {
   const { groupName, description } = req.body;
@@ -161,6 +162,10 @@ export const leaveGroup = asyncHandler(async (req, res) => {
     if (otherMembers.length === 0) {
       // Last member in group, can delete the group or just leave
       await Group.findByIdAndDelete(groupId);
+      req.app
+        .get("io")
+        ?.in(getUserSocketRoom(userId))
+        .socketsLeave(groupId);
       return res
         .status(200)
         .json(new ApiResponse(200, null, "Group deleted as you were the last member"));
@@ -183,6 +188,10 @@ export const leaveGroup = asyncHandler(async (req, res) => {
   );
 
   await group.save();
+  req.app
+    .get("io")
+    ?.in(getUserSocketRoom(userId))
+    .socketsLeave(groupId);
   req.app.get("io")?.to(groupId).emit("group-members-updated", { groupId });
 
   return res

@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+PERSONAL_NOTES.md
 *.log
 .DS_Store
 dist/

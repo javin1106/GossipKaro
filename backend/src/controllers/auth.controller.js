@@ -4,12 +4,26 @@ import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { sendRegistrationOtpEmail } from "../utils/email.js";
+import {
+  cookieSameSite,
+  cookieSecure,
+} from "../config/env.js";
 
-const cookieOptions = {
+const cookieBaseOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  secure: cookieSecure,
+  sameSite: cookieSameSite,
+  path: "/",
+};
+
+const accessCookieOptions = {
+  ...cookieBaseOptions,
+  maxAge: 24 * 60 * 60 * 1000,
+};
+
+const refreshCookieOptions = {
+  ...cookieBaseOptions,
+  maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
 const generateAccessandRefreshTokens = async (userId) => {
@@ -135,8 +149,8 @@ export const verifyRegistrationOtp = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .cookie("refreshToken", refreshToken, cookieOptions)
-    .cookie("accessToken", accessToken, cookieOptions)
+    .cookie("refreshToken", refreshToken, refreshCookieOptions)
+    .cookie("accessToken", accessToken, accessCookieOptions)
     .json(
       new ApiResponse(
         200,
@@ -202,8 +216,8 @@ export const loginUser = asyncHandler(async (req, res) => {
 
   return res
     .status(201)
-    .cookie("refreshToken", refreshToken, cookieOptions)
-    .cookie("accessToken", accessToken, cookieOptions)
+    .cookie("refreshToken", refreshToken, refreshCookieOptions)
+    .cookie("accessToken", accessToken, accessCookieOptions)
     .json(
       new ApiResponse(
         201,
@@ -234,7 +248,8 @@ export const logoutUser = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .clearCookie("refreshToken", cookieOptions)
+    .clearCookie("refreshToken", cookieBaseOptions)
+    .clearCookie("accessToken", cookieBaseOptions)
     .json(new ApiResponse(200, {}, "Logged out successfully"));
 });
 
@@ -259,7 +274,8 @@ export const refreshAccessToken = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .cookie("refreshToken", newRefreshToken, cookieOptions)
+    .cookie("refreshToken", newRefreshToken, refreshCookieOptions)
+    .cookie("accessToken", accessToken, accessCookieOptions)
     .json(new ApiResponse(200, { accessToken }, "Access token refreshed"));
 });
 
