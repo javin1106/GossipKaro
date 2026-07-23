@@ -27,6 +27,11 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    authVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true },
 );
@@ -49,6 +54,7 @@ userSchema.methods.generateAccessToken = function () {
       id: this._id,
       email: this.email,
       username: this.username,
+      authVersion: this.authVersion || 0,
     },
     process.env.ACCESS_TOKEN_SECRET,
     {
@@ -62,6 +68,7 @@ userSchema.methods.generateRefreshToken = function () {
   return jwt.sign(
     {
       id: this._id,
+      authVersion: this.authVersion || 0,
     },
     process.env.REFRESH_TOKEN_SECRET,
     {

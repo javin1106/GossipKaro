@@ -12,13 +12,17 @@ import {
   Tooltip,
 } from "@heroui/react";
 import {
+  ArrowLeft,
   Check,
   Copy,
   Download,
   DoorOpen,
   Edit3,
+  Eye,
+  EyeOff,
   File as FileIcon,
   Image as ImageIcon,
+  KeyRound,
   Link as LinkIcon,
   Loader2,
   LogOut,
@@ -185,6 +189,7 @@ export default function App() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pendingInviteCode, setPendingInviteCode] = useState(getInviteCodeFromLocation);
   const [otpChallenge, setOtpChallenge] = useState(null);
+  const [passwordResetChallenge, setPasswordResetChallenge] = useState(null);
   const [replyTarget, setReplyTarget] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const [fileDraft, setFileDraft] = useState(null);
@@ -283,6 +288,11 @@ export default function App() {
     socket.on("connect_error", (error) => {
       setConnectionState("offline");
       showNotice(error.message || "Socket connection failed", "error");
+    });
+
+    socket.on("session-revoked", () => {
+      clearAuth(false);
+      showNotice("Your password changed. Log in again", "info");
     });
 
     socket.on("new-message", (message) => {
@@ -543,6 +553,7 @@ export default function App() {
     setEditingMessage(null);
     setFileDraft(null);
     setOtpChallenge(null);
+    setPasswordResetChallenge(null);
     setConnectionState("offline");
 
     if (showMessage) {
@@ -556,19 +567,27 @@ export default function App() {
 
   async function handleAuthSubmit(event) {
     event.preventDefault();
-    setActionLoading(authMode);
 
     const form = new FormData(event.currentTarget);
+    const password = form.get("password");
+
+    if (authMode === "register" && password !== form.get("confirmPassword")) {
+      showNotice("Passwords do not match", "error");
+      return;
+    }
+
+    setActionLoading(authMode);
+
     const payload =
       authMode === "login"
         ? {
             email: form.get("email")?.trim(),
-            password: form.get("password"),
+            password,
           }
         : {
             username: form.get("username")?.trim(),
             email: form.get("email")?.trim(),
-            password: form.get("password"),
+            password,
           };
 
     try {
@@ -652,6 +671,89 @@ export default function App() {
       });
 
       showNotice("OTP resent to your email", "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  function startPasswordReset() {
+    setOtpChallenge(null);
+    setPasswordResetChallenge({ stage: "request", email: "" });
+    setNotice(null);
+  }
+
+  async function requestPasswordReset(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const email = form.get("email")?.trim();
+
+    setActionLoading("forgot-password");
+
+    try {
+      const response = await apiRequest("/api/auth/forgot-password", {
+        method: "POST",
+        body: { email },
+      });
+
+      setPasswordResetChallenge({
+        stage: "reset",
+        email: response.data?.email || email,
+      });
+      showNotice(response.message, "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function resetPassword(event) {
+    event.preventDefault();
+    if (!passwordResetChallenge?.email) return;
+
+    const form = new FormData(event.currentTarget);
+    const password = form.get("password");
+
+    if (password !== form.get("confirmPassword")) {
+      showNotice("Passwords do not match", "error");
+      return;
+    }
+
+    setActionLoading("reset-password");
+
+    try {
+      await apiRequest("/api/auth/reset-password", {
+        method: "POST",
+        body: {
+          email: passwordResetChallenge.email,
+          otp: form.get("otp")?.trim(),
+          password,
+        },
+      });
+
+      setPasswordResetChallenge(null);
+      setAuthMode("login");
+      showNotice("Password updated. You can now log in", "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function resendPasswordReset() {
+    if (!passwordResetChallenge?.email) return;
+
+    setActionLoading("resend-reset");
+
+    try {
+      const response = await apiRequest("/api/auth/forgot-password", {
+        method: "POST",
+        body: { email: passwordResetChallenge.email },
+      });
+      showNotice(response.message, "success");
     } catch (error) {
       showNotice(error.message, "error");
     } finally {
@@ -1018,17 +1120,30 @@ export default function App() {
           mode={authMode}
           pendingInviteCode={pendingInviteCode}
           otpChallenge={otpChallenge}
+          passwordResetChallenge={passwordResetChallenge}
           loading={
             actionLoading === "login" ||
             actionLoading === "register" ||
-            actionLoading === "verify-otp"
+            actionLoading === "verify-otp" ||
+            actionLoading === "forgot-password" ||
+            actionLoading === "reset-password"
           }
-          resendLoading={actionLoading === "resend-otp"}
+          resendLoading={
+            actionLoading === "resend-otp" || actionLoading === "resend-reset"
+          }
           onModeChange={setAuthMode}
           onSubmit={handleAuthSubmit}
           onVerifyOtp={verifyOtp}
           onResendOtp={resendOtp}
           onCancelOtp={() => setOtpChallenge(null)}
+          onForgotPassword={startPasswordReset}
+          onRequestPasswordReset={requestPasswordReset}
+          onResetPassword={resetPassword}
+          onResendPasswordReset={resendPasswordReset}
+          onCancelPasswordReset={() => setPasswordResetChallenge(null)}
+          onChangeResetEmail={() =>
+            setPasswordResetChallenge({ stage: "request", email: "" })
+          }
         />
         <Notice notice={notice} />
       </>
@@ -1471,6 +1586,7 @@ function AuthScreen({
   mode,
   pendingInviteCode,
   otpChallenge,
+  passwordResetChallenge,
   loading,
   resendLoading,
   onModeChange,
@@ -1478,6 +1594,12 @@ function AuthScreen({
   onVerifyOtp,
   onResendOtp,
   onCancelOtp,
+  onForgotPassword,
+  onRequestPasswordReset,
+  onResetPassword,
+  onResendPasswordReset,
+  onCancelPasswordReset,
+  onChangeResetEmail,
 }) {
   return (
     <main className="auth-page">
@@ -1499,8 +1621,23 @@ function AuthScreen({
       </section>
 
       <Surface className="auth-panel">
-        {otpChallenge ? (
+        {passwordResetChallenge ? (
+          <PasswordResetFlow
+            challenge={passwordResetChallenge}
+            loading={loading}
+            resendLoading={resendLoading}
+            onRequest={onRequestPasswordReset}
+            onReset={onResetPassword}
+            onResend={onResendPasswordReset}
+            onCancel={onCancelPasswordReset}
+            onChangeEmail={onChangeResetEmail}
+          />
+        ) : otpChallenge ? (
           <form className="auth-form" onSubmit={onVerifyOtp}>
+            <AuthHeading
+              icon={<ShieldCheck size={21} />}
+              title="Verify your email"
+            />
             <div className="pending-invite">
               <ShieldCheck size={16} />
               <span>{otpChallenge.email}</span>
@@ -1562,10 +1699,19 @@ function AuthScreen({
                 </Tabs.List>
               </Tabs.ListContainer>
               <Tabs.Panel id="login">
-                <CredentialsForm loading={loading} mode="login" onSubmit={onSubmit} />
+                <CredentialsForm
+                  loading={loading}
+                  mode="login"
+                  onForgotPassword={onForgotPassword}
+                  onSubmit={onSubmit}
+                />
               </Tabs.Panel>
               <Tabs.Panel id="register">
-                <CredentialsForm loading={loading} mode="register" onSubmit={onSubmit} />
+                <CredentialsForm
+                  loading={loading}
+                  mode="register"
+                  onSubmit={onSubmit}
+                />
               </Tabs.Panel>
             </Tabs>
           </>
@@ -1575,27 +1721,173 @@ function AuthScreen({
   );
 }
 
-function CredentialsForm({ loading, mode, onSubmit }) {
+function AuthHeading({ icon, title }) {
+  return (
+    <div className="auth-heading">
+      <span>{icon}</span>
+      <h2>{title}</h2>
+    </div>
+  );
+}
+
+function PasswordField({
+  autoComplete,
+  label,
+  minLength = 8,
+  name,
+  placeholder,
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+
+  return (
+    <TextField fullWidth isRequired name={name} type={isVisible ? "text" : "password"}>
+      <Label>{label}</Label>
+      <div className="password-input-wrap">
+        <Input
+          autoComplete={autoComplete}
+          maxLength={72}
+          minLength={minLength}
+          placeholder={placeholder}
+        />
+        <IconAction
+          className="password-toggle"
+          label={isVisible ? "Hide password" : "Show password"}
+          placement="left"
+          type="button"
+          variant="secondary"
+          onClick={() => setIsVisible((current) => !current)}
+        >
+          {isVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+        </IconAction>
+      </div>
+    </TextField>
+  );
+}
+
+function PasswordResetFlow({
+  challenge,
+  loading,
+  resendLoading,
+  onRequest,
+  onReset,
+  onResend,
+  onCancel,
+  onChangeEmail,
+}) {
+  if (challenge.stage === "request") {
+    return (
+      <form className="auth-form" onSubmit={onRequest}>
+        <AuthHeading icon={<KeyRound size={21} />} title="Reset password" />
+        <TextField fullWidth isRequired name="email" type="email">
+          <Label>Email</Label>
+          <Input autoComplete="email" autoFocus placeholder="you@example.com" />
+        </TextField>
+        <Button className="primary-button wide" type="submit" variant="primary" isDisabled={loading}>
+          {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+          Send Reset Code
+        </Button>
+        <Button className="secondary-button wide" type="button" variant="secondary" onClick={onCancel}>
+          <ArrowLeft size={18} />
+          Back to Login
+        </Button>
+      </form>
+    );
+  }
+
+  return (
+    <form className="auth-form" onSubmit={onReset}>
+      <AuthHeading icon={<KeyRound size={21} />} title="Choose new password" />
+      <div className="pending-invite">
+        <ShieldCheck size={16} />
+        <span>{challenge.email}</span>
+      </div>
+      <TextField fullWidth isRequired name="otp">
+        <Label>Reset code</Label>
+        <Input
+          autoComplete="one-time-code"
+          autoFocus
+          inputMode="numeric"
+          maxLength={6}
+          pattern="[0-9]{6}"
+          placeholder="6-digit code"
+        />
+      </TextField>
+      <PasswordField
+        autoComplete="new-password"
+        label="New password"
+        name="password"
+        placeholder="8 or more characters"
+      />
+      <PasswordField
+        autoComplete="new-password"
+        label="Confirm new password"
+        name="confirmPassword"
+        placeholder="Repeat your password"
+      />
+      <Button className="primary-button wide" type="submit" variant="primary" isDisabled={loading}>
+        {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+        Update Password
+      </Button>
+      <div className="auth-inline-actions">
+        <Button
+          className="secondary-button"
+          type="button"
+          variant="secondary"
+          onClick={onResend}
+          isDisabled={resendLoading}
+        >
+          {resendLoading ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+          Resend Code
+        </Button>
+        <Button className="secondary-button" type="button" variant="secondary" onClick={onChangeEmail}>
+          Change Email
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function CredentialsForm({ loading, mode, onForgotPassword, onSubmit }) {
   return (
     <form className="auth-form" onSubmit={onSubmit}>
+      <AuthHeading
+        icon={mode === "login" ? <MessageCircle size={21} /> : <UserPlus size={21} />}
+        title={mode === "login" ? "Welcome back" : "Create your account"}
+      />
       {mode === "register" ? (
         <TextField fullWidth isRequired name="username">
           <Label>Username</Label>
-          <Input autoComplete="username" minLength={2} placeholder="Your display name" />
+          <Input autoComplete="username" maxLength={30} minLength={2} placeholder="Your display name" />
         </TextField>
       ) : null}
       <TextField fullWidth isRequired name="email" type="email">
         <Label>Email</Label>
         <Input autoComplete="email" placeholder="you@example.com" />
       </TextField>
-      <TextField fullWidth isRequired name="password" type="password">
-        <Label>Password</Label>
-        <Input
-          autoComplete={mode === "login" ? "current-password" : "new-password"}
-          minLength={6}
-          placeholder="Minimum 6 characters"
+      <PasswordField
+        autoComplete={mode === "login" ? "current-password" : "new-password"}
+        label="Password"
+        minLength={mode === "login" ? 1 : 8}
+        name="password"
+        placeholder={mode === "login" ? "Your password" : "8 or more characters"}
+      />
+      {mode === "register" ? (
+        <PasswordField
+          autoComplete="new-password"
+          label="Confirm password"
+          name="confirmPassword"
+          placeholder="Repeat your password"
         />
-      </TextField>
+      ) : (
+        <Button
+          className="text-button forgot-password-button"
+          type="button"
+          variant="secondary"
+          onClick={onForgotPassword}
+        >
+          Forgot password?
+        </Button>
+      )}
       <Button className="primary-button wide" type="submit" variant="primary" isDisabled={loading}>
         {loading ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
         {mode === "login" ? "Login" : "Send OTP"}
@@ -1812,7 +2104,7 @@ function Notice({ notice }) {
   if (!notice) return null;
 
   return (
-    <div className={`notice ${notice.type}`}>
+    <div className={`notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>
       <span>{notice.message}</span>
     </div>
   );

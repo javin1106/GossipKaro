@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "node --test src/config/env.test.js src/utils/rateLimiter.test.js src/utils/socketRooms.test.js"
+    "test": "node --test src/config/env.test.js src/utils/authValidation.test.js src/utils/otpStore.test.js src/utils/rateLimiter.test.js src/utils/socketRooms.test.js"
   },
   "keywords": [],
   "author": "Javin Chutani",

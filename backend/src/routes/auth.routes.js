@@ -4,6 +4,8 @@ import {
   registerUser,
   verifyRegistrationOtp,
   resendRegistrationOtp,
+  requestPasswordReset,
+  resetPassword,
   loginUser,
   logoutUser,
   refreshAccessToken,
@@ -51,6 +53,22 @@ const loginRateLimit = createRateLimitMiddleware({
   keyGenerator: emailRateLimitKey,
 });
 
+const forgotPasswordRateLimit = createRateLimitMiddleware({
+  scope: "auth:forgot-password",
+  limit: 3,
+  windowSeconds: 15 * 60,
+  message: "Too many reset requests. Please wait before trying again",
+  keyGenerator: emailRateLimitKey,
+});
+
+const resetPasswordRateLimit = createRateLimitMiddleware({
+  scope: "auth:reset-password",
+  limit: 10,
+  windowSeconds: 10 * 60,
+  message: "Too many reset attempts. Please request a new code",
+  keyGenerator: emailRateLimitKey,
+});
+
 const refreshRateLimit = createRateLimitMiddleware({
   scope: "auth:refresh",
   limit: 30,
@@ -61,6 +79,12 @@ const refreshRateLimit = createRateLimitMiddleware({
 authRoutes.post("/register", registerRateLimit, registerUser);
 authRoutes.post("/verify-otp", verifyOtpRateLimit, verifyRegistrationOtp);
 authRoutes.post("/resend-otp", resendOtpRateLimit, resendRegistrationOtp);
+authRoutes.post(
+  "/forgot-password",
+  forgotPasswordRateLimit,
+  requestPasswordReset,
+);
+authRoutes.post("/reset-password", resetPasswordRateLimit, resetPassword);
 authRoutes.post("/login", loginRateLimit, loginUser);
 authRoutes.post("/refresh", refreshRateLimit, refreshAccessToken);
 authRoutes.get("/me", verifyJWT, getCurrentUser);

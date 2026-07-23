@@ -213,9 +213,14 @@ const setupSocket = (io, { presenceClient, rateLimiter } = {}) => {
       if (!token) return next(new Error("Unauthorized"));
 
       const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-      const user = await User.findById(decoded.id).select("_id username email");
+      const user = await User.findById(decoded.id).select(
+        "_id username email authVersion",
+      );
 
       if (!user) return next(new Error("User not found"));
+      if ((decoded.authVersion ?? 0) !== (user.authVersion || 0)) {
+        return next(new Error("Authentication failed"));
+      }
 
       socket.user = user;
       next();

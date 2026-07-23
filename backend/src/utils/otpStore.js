@@ -1,6 +1,5 @@
 import crypto from "crypto";
 
-const OTP_KEY_PREFIX = "gossipkaro:otp:register:";
 const OTP_TTL_SECONDS = Number(process.env.OTP_TTL_SECONDS || 10 * 60);
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 
@@ -8,17 +7,21 @@ const memoryStore = new Map();
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
 
-const getOtpKey = (email) => `${OTP_KEY_PREFIX}${normalizeEmail(email)}`;
+const normalizePurpose = (purpose = "register") =>
+  purpose.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+const getOtpKey = (purpose, email) =>
+  `gossipkaro:otp:${normalizePurpose(purpose)}:${normalizeEmail(email)}`;
 
 const getSecret = () =>
   process.env.OTP_SECRET ||
   process.env.ACCESS_TOKEN_SECRET ||
   "gossipkaro-dev-otp-secret";
 
-const hashOtp = (email, otp) =>
+const hashOtp = (purpose, email, otp) =>
   crypto
     .createHmac("sha256", getSecret())
-    .update(`${normalizeEmail(email)}:${otp}`)
+    .update(`${normalizePurpose(purpose)}:${normalizeEmail(email)}:${otp}`)
     .digest("hex");
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
@@ -29,21 +32,24 @@ const isSameHash = (first, second) => {
   return firstBuffer.length === secondBuffer.length && crypto.timingSafeEqual(firstBuffer, secondBuffer);
 };
 
-export function createOtpStore(redisClient) {
+export function createOtpStore(redisClient, { purpose = "register" } = {}) {
+  const normalizedPurpose = normalizePurpose(purpose);
+
   const createOtp = async (email) => {
     const normalizedEmail = normalizeEmail(email);
     const otp = generateOtp();
     const payload = {
-      hash: hashOtp(normalizedEmail, otp),
+      hash: hashOtp(normalizedPurpose, normalizedEmail, otp),
       attempts: 0,
     };
+    const key = getOtpKey(normalizedPurpose, normalizedEmail);
 
     if (redisClient) {
-      await redisClient.set(getOtpKey(normalizedEmail), JSON.stringify(payload), {
+      await redisClient.set(key, JSON.stringify(payload), {
         EX: OTP_TTL_SECONDS,
       });
     } else {
-      memoryStore.set(getOtpKey(normalizedEmail), {
+      memoryStore.set(key, {
         ...payload,
         expiresAt: Date.now() + OTP_TTL_SECONDS * 1000,
       });
@@ -57,7 +63,7 @@ export function createOtpStore(redisClient) {
 
   const verifyOtp = async (email, otp) => {
     const normalizedEmail = normalizeEmail(email);
-    const key = getOtpKey(normalizedEmail);
+    const key = getOtpKey(normalizedPurpose, normalizedEmail);
     let payload;
     let ttlSeconds = OTP_TTL_SECONDS;
 
@@ -83,7 +89,7 @@ export function createOtpStore(redisClient) {
       return { ok: false, reason: "locked" };
     }
 
-    const incomingHash = hashOtp(normalizedEmail, otp);
+    const incomingHash = hashOtp(normalizedPurpose, normalizedEmail, otp);
     if (isSameHash(payload.hash, incomingHash)) {
       if (redisClient) await redisClient.del(key);
       else memoryStore.delete(key);
@@ -107,7 +113,7 @@ export function createOtpStore(redisClient) {
   };
 
   const deleteOtp = async (email) => {
-    const key = getOtpKey(email);
+    const key = getOtpKey(normalizedPurpose, email);
     if (redisClient) await redisClient.del(key);
     else memoryStore.delete(key);
   };

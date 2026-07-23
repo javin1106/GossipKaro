@@ -97,6 +97,8 @@ button:disabled {
   width: min(1080px, calc(100vw - 48px));
   margin: 0 auto;
   padding: 32px 0;
+  max-height: 100dvh;
+  overflow-y: auto;
 }
 
 .auth-brand {
@@ -222,6 +224,30 @@ button:disabled {
   gap: 16px;
 }
 
+.auth-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-heading > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  color: var(--mint-strong);
+  background: #eaf8f3;
+  border-radius: 8px;
+}
+
+.auth-heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
 .auth-inline-actions {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -251,6 +277,34 @@ button:disabled {
 .input[data-focused="true"] {
   border-color: var(--mint);
   box-shadow: 0 0 0 3px rgba(0, 168, 132, 0.16);
+}
+
+.password-input-wrap {
+  position: relative;
+}
+
+.password-input-wrap .input {
+  padding-right: 48px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  z-index: 1;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 6px;
+}
+
+.password-toggle:hover {
+  color: var(--mint-strong);
+  background: var(--panel-soft);
 }
 
 .primary-button,
@@ -306,6 +360,28 @@ button:disabled {
 
 .primary-button.wide {
   width: 100%;
+}
+
+.secondary-button.wide {
+  width: 100%;
+}
+
+.text-button {
+  min-height: 32px;
+  padding: 0;
+  color: var(--mint-strong);
+  background: transparent;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  color: var(--header);
+}
+
+.forgot-password-button {
+  justify-self: end;
+  margin-top: -8px;
 }
 
 .icon-button {

@@ -1,9 +1,19 @@
 import User from "../models/user.model.js";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { sendRegistrationOtpEmail } from "../utils/email.js";
+import {
+  sendPasswordResetOtpEmail,
+  sendRegistrationOtpEmail,
+} from "../utils/email.js";
+import {
+  getPasswordValidationError,
+  getUsernameValidationError,
+  isValidEmail,
+} from "../utils/authValidation.js";
+import { getUserSocketRoom } from "../utils/socketRooms.js";
 import {
   cookieSameSite,
   cookieSecure,
@@ -25,6 +35,9 @@ const refreshCookieOptions = {
   ...cookieBaseOptions,
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
+
+const DUMMY_PASSWORD_HASH =
+  "$2b$10$7rgYMhUmvERJmC.jOqdU3ui93OUKpKR64nSDk.4WVu.tKrBBZX3Ye";
 
 const generateAccessandRefreshTokens = async (userId) => {
   try {
@@ -58,6 +71,12 @@ const getOtpStore = (req) => {
   return otpStore;
 };
 
+const getPasswordResetOtpStore = (req) => {
+  const otpStore = req.app.get("passwordResetOtpStore");
+  if (!otpStore) throw new ApiError(500, "Password reset service is unavailable");
+  return otpStore;
+};
+
 const buildOtpResponse = (otpResult) => ({
   expiresInSeconds: otpResult.expiresInSeconds,
 });
@@ -70,6 +89,16 @@ export const registerUser = asyncHandler(async (req, res) => {
 
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedUsername = username.trim();
+  if (!isValidEmail(normalizedEmail)) {
+    throw new ApiError(400, "Enter a valid email address");
+  }
+
+  const usernameError = getUsernameValidationError(normalizedUsername);
+  if (usernameError) throw new ApiError(400, usernameError);
+
+  const passwordError = getPasswordValidationError(password);
+  if (passwordError) throw new ApiError(400, passwordError);
+
   const existingEmailUser = await User.findOne({ email: normalizedEmail });
   const existingUsernameUser = await User.findOne({ username: normalizedUsername });
 
@@ -98,11 +127,16 @@ export const registerUser = asyncHandler(async (req, res) => {
 
   const otpStore = getOtpStore(req);
   const otpResult = await otpStore.createOtp(normalizedEmail);
-  await sendRegistrationOtpEmail({
-    to: normalizedEmail,
-    otp: otpResult.otp,
-    username: user.username,
-  });
+  try {
+    await sendRegistrationOtpEmail({
+      to: normalizedEmail,
+      otp: otpResult.otp,
+      username: user.username,
+    });
+  } catch (error) {
+    await otpStore.deleteOtp(normalizedEmail);
+    throw error;
+  }
 
   return res
     .status(201)
@@ -121,7 +155,7 @@ export const registerUser = asyncHandler(async (req, res) => {
 export const verifyRegistrationOtp = asyncHandler(async (req, res) => {
   const { email, otp } = req.body;
 
-  if (!email?.trim() || !otp?.trim()) {
+  if (!email?.trim() || !/^\d{6}$/.test(otp?.trim() || "")) {
     throw new ApiError(400, "Email and OTP are required");
   }
 
@@ -178,11 +212,16 @@ export const resendRegistrationOtp = asyncHandler(async (req, res) => {
 
   const otpStore = getOtpStore(req);
   const otpResult = await otpStore.createOtp(normalizedEmail);
-  await sendRegistrationOtpEmail({
-    to: normalizedEmail,
-    otp: otpResult.otp,
-    username: user.username,
-  });
+  try {
+    await sendRegistrationOtpEmail({
+      to: normalizedEmail,
+      otp: otpResult.otp,
+      username: user.username,
+    });
+  } catch (error) {
+    await otpStore.deleteOtp(normalizedEmail);
+    throw error;
+  }
 
   return res.status(200).json(
     new ApiResponse(
@@ -196,6 +235,88 @@ export const resendRegistrationOtp = asyncHandler(async (req, res) => {
   );
 });
 
+export const requestPasswordReset = asyncHandler(async (req, res) => {
+  const normalizedEmail = req.body?.email?.trim().toLowerCase();
+
+  if (!isValidEmail(normalizedEmail)) {
+    throw new ApiError(400, "Enter a valid email address");
+  }
+
+  const user = await User.findOne({
+    email: normalizedEmail,
+    isVerified: { $ne: false },
+  });
+
+  if (user) {
+    const otpStore = getPasswordResetOtpStore(req);
+    const otpResult = await otpStore.createOtp(normalizedEmail);
+
+    try {
+      await sendPasswordResetOtpEmail({
+        to: normalizedEmail,
+        otp: otpResult.otp,
+        username: user.username,
+      });
+    } catch (error) {
+      await otpStore.deleteOtp(normalizedEmail);
+      throw error;
+    }
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { email: normalizedEmail },
+      "If an account exists for this email, a reset code has been sent",
+    ),
+  );
+});
+
+export const resetPassword = asyncHandler(async (req, res) => {
+  const normalizedEmail = req.body?.email?.trim().toLowerCase();
+  const otp = req.body?.otp?.trim();
+  const password = req.body?.password;
+
+  if (!isValidEmail(normalizedEmail) || !/^\d{6}$/.test(otp || "")) {
+    throw new ApiError(400, "Email and reset code are required");
+  }
+
+  const passwordError = getPasswordValidationError(password);
+  if (passwordError) throw new ApiError(400, passwordError);
+
+  const otpStore = getPasswordResetOtpStore(req);
+  const verification = await otpStore.verifyOtp(normalizedEmail, otp);
+
+  if (!verification.ok) {
+    throw new ApiError(400, "Invalid or expired reset code");
+  }
+
+  const user = await User.findOne({
+    email: normalizedEmail,
+    isVerified: { $ne: false },
+  });
+
+  if (!user) {
+    throw new ApiError(400, "Invalid or expired reset code");
+  }
+
+  user.password = password;
+  user.refreshToken = null;
+  user.authVersion = (user.authVersion || 0) + 1;
+  await user.save();
+
+  const io = req.app.get("io");
+  const userRoom = getUserSocketRoom(user._id);
+  io?.to(userRoom).emit("session-revoked", { reason: "password-reset" });
+  io?.in(userRoom).disconnectSockets(true);
+
+  return res
+    .status(200)
+    .clearCookie("refreshToken", cookieBaseOptions)
+    .clearCookie("accessToken", cookieBaseOptions)
+    .json(new ApiResponse(200, {}, "Password reset successfully"));
+});
+
 export const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
@@ -204,11 +325,11 @@ export const loginUser = asyncHandler(async (req, res) => {
 
   const normalizedEmail = email.trim().toLowerCase();
   const user = await User.findOne({ email: normalizedEmail });
-  if (!user) throw new ApiError(404, "User not found");
-  if (user.isVerified === false) throw new ApiError(403, "Please verify your account first");
-
-  const isMatch = await user.comparePassword(password);
+  const isMatch = user
+    ? await user.comparePassword(password)
+    : await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
   if (!isMatch) throw new ApiError(401, "Invalid credentials");
+  if (user.isVerified === false) throw new ApiError(403, "Please verify your account first");
 
   const { accessToken, refreshToken } = await generateAccessandRefreshTokens(
     user._id,
@@ -266,6 +387,10 @@ export const refreshAccessToken = asyncHandler(async (req, res) => {
   const user = await User.findById(decoded?.id);
   if (!user) throw new ApiError(404, "User not found");
 
+  if ((decoded.authVersion ?? 0) !== (user.authVersion || 0)) {
+    throw new ApiError(401, "Invalid refresh token");
+  }
+
   if (user.refreshToken !== incomingRefreshToken)
     throw new ApiError(401, "Invalid refresh token");
 
@@ -281,7 +406,7 @@ export const refreshAccessToken = asyncHandler(async (req, res) => {
 
 export const getCurrentUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user?._id).select(
-    "-password -refreshToken",
+    "-password -refreshToken -authVersion",
   );
 
   if (!user) throw new ApiError(404, "User not found");

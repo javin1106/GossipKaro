@@ -31,6 +31,10 @@ const rateLimiter = createRateLimiter(redisState.rateLimitClient);
 setupSocket(io, { ...redisState, rateLimiter });
 app.set("io", io);
 app.set("otpStore", createOtpStore(redisState.otpClient));
+app.set(
+  "passwordResetOtpStore",
+  createOtpStore(redisState.otpClient, { purpose: "password-reset" }),
+);
 app.set("rateLimiter", rateLimiter);
 
 const PORT = process.env.PORT || 5000;

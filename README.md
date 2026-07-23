@@ -7,12 +7,16 @@ The app is currently structured as two separate projects:
 - `backend/` - Express API, MongoDB models, JWT auth, Socket.IO server
 - `frontend/` - Vite + React 19 chat UI built with HeroUI
 
-It is not deployed yet. Run it locally with the commands below.
+Production deployments:
+
+- Frontend: [gossip-karo.vercel.app](https://gossip-karo.vercel.app/)
+- Backend health: [gossipkaro.onrender.com/health](https://gossipkaro.onrender.com/health)
 
 ## Features
 
 - Register and login with JWT auth
 - Verify new accounts with Redis-backed OTP
+- Recover forgotten passwords through a rate-limited email OTP flow
 - Rate-limit authentication, invite creation, and real-time socket actions
 - Create chat groups
 - Join groups using invite codes or invite links
@@ -218,6 +222,8 @@ npm --prefix frontend run preview
 POST /api/auth/register
 POST /api/auth/verify-otp
 POST /api/auth/resend-otp
+POST /api/auth/forgot-password
+POST /api/auth/reset-password
 POST /api/auth/login
 POST /api/auth/refresh
 GET  /api/auth/me
@@ -290,11 +296,15 @@ const socket = io("http://localhost:5000", {
 | `user-typing` | `{ username, userId }` | A user started typing |
 | `user-stopped-typing` | `{ userId }` | A user stopped typing |
 | `group-members-updated` | `{ groupId }` | Refresh group member details |
+| `session-revoked` | `{ reason }` | Sign out open clients after a password reset |
 | `error` | `{ message }` | Socket error message |
 
 ## Security Controls
 
 - Authentication endpoints use IP/email-scoped fixed-window limits.
+- Registration and password-reset OTPs use separate Redis namespaces and cannot be exchanged.
+- Password reset codes are hashed, expire automatically, are single-use, and have limited verification attempts.
+- Password resets revoke refresh tokens, invalidate previously issued JWTs with an auth version, and disconnect active sockets.
 - Invite creation is limited per authenticated user.
 - Socket.IO message, mutation, read, join, and typing events are throttled per user.
 - Redis shares rate-limit counters across backend instances; local development falls back to process memory.
@@ -317,8 +327,9 @@ const socket = io("http://localhost:5000", {
 11. Inactive groups show unread badges until opened.
 12. Online presence is tracked from active socket connections.
 13. The Members button shows the current group members and admins.
+14. Login includes email-based password recovery with resend, password confirmation, and session revocation.
 
-## OTP Verification Flow
+## OTP Verification And Password Recovery
 
 GossipKaro uses Redis for temporary registration OTP state:
 
@@ -327,6 +338,13 @@ GossipKaro uses Redis for temporary registration OTP state:
 3. Redis stores the OTP key with a TTL, defaulting to 10 minutes.
 4. `POST /api/auth/verify-otp` compares the submitted OTP hash, deletes it on success, verifies the user, and returns JWT tokens.
 5. `POST /api/auth/resend-otp` replaces the old OTP with a fresh one and resets the TTL.
+
+Password recovery uses the same storage mechanism with a separate `password-reset` key namespace:
+
+1. `POST /api/auth/forgot-password` returns the same response whether an account exists or not.
+2. For a verified account, the backend emails a fresh reset OTP and stores only its HMAC hash.
+3. `POST /api/auth/reset-password` consumes the OTP, validates the new password, and hashes it through the user model.
+4. The backend increments the user's auth version, clears the stored refresh token, and disconnects active sockets so old sessions cannot continue.
 
 For local development without `REDIS_URL`, the OTP store falls back to in-memory storage, but OTP delivery still happens through the configured SMTP account. The OTP is never returned in the API response or shown in the UI.
 
