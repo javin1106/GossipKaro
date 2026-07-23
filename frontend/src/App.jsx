@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Avatar,
   Button,
@@ -27,6 +27,7 @@ import {
   Loader2,
   LogOut,
   MessageCircle,
+  MoreHorizontal,
   Paperclip,
   Plus,
   Reply,
@@ -48,6 +49,7 @@ import {
   getInitials,
   normalizeUser,
 } from "./lib/format.js";
+import { tokenizeMessageLinks } from "./lib/links.js";
 import { reducePresenceEvent } from "./lib/presence.js";
 
 const TOKEN_KEY = "gossipkaro.token";
@@ -174,6 +176,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState("login");
   const [groups, setGroups] = useState([]);
   const [activeGroupId, setActiveGroupId] = useState("");
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [modal, setModal] = useState(null);
@@ -202,6 +205,9 @@ export default function App() {
   const autoJoinRef = useRef(false);
   const fileInputRef = useRef(null);
   const presenceStateRef = useRef({});
+  const messageListRef = useRef(null);
+  const lastScrolledGroupRef = useRef("");
+  const shouldStickToBottomRef = useRef(true);
 
   const activeGroup = useMemo(
     () => groups.find((group) => group._id === activeGroupId),
@@ -219,6 +225,22 @@ export default function App() {
   const isAuthed = Boolean(auth.token && auth.user);
   const typingNames = Object.values(typingUsers);
   const activeOnlineUserIds = onlineUsersByGroup[activeGroupId] || [];
+
+  useLayoutEffect(() => {
+    const messageList = messageListRef.current;
+    if (!activeGroupId || messagesLoading || !messageList) return;
+
+    const openedGroup = lastScrolledGroupRef.current !== activeGroupId;
+    if (!openedGroup && !shouldStickToBottomRef.current) return;
+
+    messageList.scrollTo({
+      top: messageList.scrollHeight,
+      behavior: openedGroup ? "auto" : "smooth",
+    });
+
+    lastScrolledGroupRef.current = activeGroupId;
+    shouldStickToBottomRef.current = true;
+  }, [activeGroupId, messagesLoading, sortedMessages.length]);
 
   useEffect(() => {
     activeGroupRef.current = activeGroupId;
@@ -491,6 +513,7 @@ export default function App() {
       const targetGroupId = selectGroupId || activeGroupRef.current;
       if (targetGroupId && !nextGroups.some((group) => group._id === targetGroupId)) {
         setActiveGroupId("");
+        setMobileChatOpen(false);
         setMessages([]);
       }
 
@@ -544,6 +567,7 @@ export default function App() {
     setGroups([]);
     setMessages([]);
     setActiveGroupId("");
+    setMobileChatOpen(false);
     setMessageDraft("");
     setTypingUsers({});
     setOnlineUsersByGroup({});
@@ -778,7 +802,9 @@ export default function App() {
   }
 
   async function selectGroup(groupId) {
+    shouldStickToBottomRef.current = true;
     setActiveGroupId(groupId);
+    setMobileChatOpen(true);
     setMessages([]);
     setTypingUsers({});
     setMessageDraft("");
@@ -814,6 +840,30 @@ export default function App() {
         setMessagesLoading(false);
       }
     }
+  }
+
+  function closeMobileChat() {
+    activeGroupRef.current = "";
+    messageLoadRef.current = "";
+    lastScrolledGroupRef.current = "";
+    shouldStickToBottomRef.current = true;
+    setMobileChatOpen(false);
+    setActiveGroupId("");
+    setMessages([]);
+    setTypingUsers({});
+    setMessageDraft("");
+    setReplyTarget(null);
+    setEditingMessage(null);
+    setFileDraft(null);
+    setShowEmojiPicker(false);
+  }
+
+  function handleMessageListScroll(event) {
+    const messageList = event.currentTarget;
+    const distanceFromBottom =
+      messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
+
+    shouldStickToBottomRef.current = distanceFromBottom < 96;
   }
 
   async function createGroup(event) {
@@ -931,6 +981,7 @@ export default function App() {
 
       const leftGroupId = activeGroupId;
       setActiveGroupId("");
+      setMobileChatOpen(false);
       setMessages([]);
       setReplyTarget(null);
       setEditingMessage(null);
@@ -1059,6 +1110,7 @@ export default function App() {
           content: outgoingContent,
         });
       } else {
+        shouldStickToBottomRef.current = true;
         let attachment = null;
 
         if (fileDraft) {
@@ -1152,7 +1204,7 @@ export default function App() {
 
   return (
     <>
-      <main className="app-shell">
+      <main className={`app-shell ${mobileChatOpen ? "mobile-chat-open" : ""}`}>
         <aside className="sidebar">
           <div className="sidebar-header">
             <div className="user-lockup">
@@ -1242,6 +1294,16 @@ export default function App() {
             <>
               <header className="chat-header">
                 <div className="chat-title">
+                  <IconAction
+                    className="icon-button mobile-back-button"
+                    type="button"
+                    label="Back to groups"
+                    placement="bottom"
+                    variant="secondary"
+                    onClick={closeMobileChat}
+                  >
+                    <ArrowLeft size={20} />
+                  </IconAction>
                   <AppAvatar
                     className="group-avatar large"
                     color="success"
@@ -1290,7 +1352,11 @@ export default function App() {
                 </div>
               </header>
 
-              <div className="message-list">
+              <div
+                className="message-list"
+                ref={messageListRef}
+                onScroll={handleMessageListScroll}
+              >
                 {messagesLoading ? (
                   <EmptyState icon={<Loader2 className="spin" />} title="Loading messages" />
                 ) : sortedMessages.length === 0 ? (
@@ -1897,6 +1963,7 @@ function CredentialsForm({ loading, mode, onForgotPassword, onSubmit }) {
 }
 
 function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
+  const [actionsOpen, setActionsOpen] = useState(false);
   const sender = message.sender;
   const senderId = getEntityId(sender);
   const userId = getEntityId(user);
@@ -1937,12 +2004,33 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
         messageType={message.messageType}
       />
       {showMessageText ? (
-        <p className={message.isDeleted ? "deleted-text" : display.locked || display.failed ? "locked-text" : ""}>
-          {display.content}
+        <p
+          className={`message-text ${
+            message.isDeleted
+              ? "deleted-text"
+              : display.locked || display.failed
+                ? "locked-text"
+                : ""
+          }`}
+        >
+          <MessageText text={display.content} />
         </p>
       ) : null}
       <div className="message-meta">
         {message.isEdited && !message.isDeleted ? <span>edited</span> : null}
+        {!message.isDeleted ? (
+          <IconAction
+            className="message-action-toggle"
+            type="button"
+            label={actionsOpen ? "Close message actions" : "Open message actions"}
+            size="sm"
+            variant="tertiary"
+            aria-expanded={actionsOpen}
+            onClick={() => setActionsOpen((current) => !current)}
+          >
+            <MoreHorizontal size={16} />
+          </IconAction>
+        ) : null}
         <time>{formatMessageTime(message.createdAt)}</time>
       </div>
       {!message.isDeleted && Object.keys(groupedReactions).length > 0 ? (
@@ -1966,7 +2054,10 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
         </div>
       ) : null}
       {!message.isDeleted ? (
-        <div className="quick-reactions" aria-label="Message actions">
+        <div
+          className={`quick-reactions ${actionsOpen ? "open" : ""}`}
+          aria-label="Message actions"
+        >
           <div className="reaction-buttons">
             {REACTION_OPTIONS.map((emoji) => (
               <Button
@@ -1977,7 +2068,10 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
                 size="sm"
                 variant="tertiary"
                 aria-label={`React with ${emoji}`}
-                onClick={() => onReact(message._id, emoji)}
+                onClick={() => {
+                  onReact(message._id, emoji);
+                  setActionsOpen(false);
+                }}
               >
                 {emoji}
               </Button>
@@ -1990,7 +2084,10 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
               label="Reply"
               size="sm"
               variant="tertiary"
-              onClick={() => onReply(message)}
+              onClick={() => {
+                onReply(message);
+                setActionsOpen(false);
+              }}
             >
               <Reply size={14} />
             </IconAction>
@@ -2001,7 +2098,10 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
                 label="Edit"
                 size="sm"
                 variant="tertiary"
-                onClick={() => onEdit(message)}
+                onClick={() => {
+                  onEdit(message);
+                  setActionsOpen(false);
+                }}
               >
                 <Edit3 size={14} />
               </IconAction>
@@ -2013,7 +2113,10 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
                 label="Delete"
                 size="sm"
                 variant="danger-soft"
-                onClick={() => onDelete(message)}
+                onClick={() => {
+                  onDelete(message);
+                  setActionsOpen(false);
+                }}
               >
                 <Trash2 size={14} />
               </IconAction>
@@ -2022,6 +2125,48 @@ function MessageBubble({ message, user, onReact, onReply, onEdit, onDelete }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+function openMessageLink(event, href) {
+  if (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+
+  const newTab = window.open("about:blank", "_blank");
+  if (!newTab) {
+    window.location.assign(href);
+    return;
+  }
+
+  newTab.opener = null;
+  newTab.location.replace(href);
+}
+
+function MessageText({ text }) {
+  return tokenizeMessageLinks(text).map((token, index) =>
+    token.type === "link" ? (
+      <a
+        className="message-link"
+        href={token.href}
+        key={`${token.href}-${index}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => openMessageLink(event, token.href)}
+      >
+        {token.value}
+      </a>
+    ) : (
+      <span key={`text-${index}`}>{token.value}</span>
+    ),
   );
 }
 

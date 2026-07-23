@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node --test src/lib/presence.test.js"
+    "test": "node --test src/lib/links.test.js src/lib/presence.test.js"
   },
   "dependencies": {
     "@heroui/react": "^3.2.2",
